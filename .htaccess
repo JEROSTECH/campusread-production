@@ -1,0 +1,29 @@
+# CampusRead Production Apache / Hostinger Security Configuration
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # 1. Block all direct HTTP access to private storage directories
+  RewriteRule ^storage_private/ - [F,L,NC]
+  RewriteRule ^PRIVATE_STORAGE/ - [F,L,NC]
+
+  # 2. Block direct static access to all raw PDF files outside the authenticated API router
+  RewriteRule \.(pdf)$ - [F,L,NC]
+
+  # 3. Block sensitive configuration and environment files
+  RewriteRule ^(\.env|\.git|firebase\.json|firestore\.rules|storage\.rules) - [F,L,NC]
+
+  # 4. Route API requests to Node.js backend proxy if applicable
+  RewriteCond %{REQUEST_URI} ^/api/ [NC]
+  RewriteRule ^api/(.*)$ http://127.0.0.1:3000/api/$1 [P,L]
+</IfModule>
+
+# Prevent directory browsing
+Options -Indexes
+
+# Prevent MIME sniffing
+<IfModule mod_headers.c>
+  Header set X-Content-Type-Options "nosniff"
+  Header set X-Frame-Options "SAMEORIGIN"
+  Header set X-XSS-Protection "1; mode=block"
+</IfModule>

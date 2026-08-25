@@ -1,0 +1,6 @@
+{
+  "name": "Campus Read",
+  "description": "Read. Learn. Pass. Anywhere. Nigerian digital academic marketplace and reading platform for higher education.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
