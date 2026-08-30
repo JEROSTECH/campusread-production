@@ -174,7 +174,7 @@ export const Header: React.FC<HeaderProps> = ({
               className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-900 rounded-md font-bold text-xs hover:bg-blue-100 transition-colors cursor-pointer"
             >
               <User className="w-3.5 h-3.5" />
-              <span className="max-w-[100px] truncate">{userProfile.fullName.split(' ')[0]}</span>
+              <span className="max-w-[100px] truncate">{(userProfile.fullName || 'User').split(' ')[0]}</span>
               <span className="bg-blue-900 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded uppercase">
                 {userProfile.role}
               </span>
