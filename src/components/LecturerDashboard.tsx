@@ -1,0 +1,675 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { BookOpen, Upload, DollarSign, CheckCircle, Clock, AlertCircle, Plus, Users, ArrowUpRight, Banknote, FileText, X, ShieldAlert, Check } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import { Book } from '../types';
+import { MOCK_BOOKS } from '../data/mockBooks';
+import { addDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { db, auth } from '../lib/firebase';
+import { uploadPdfMaterial, validatePdfFile } from '../lib/pdfStorage';
+
+export const LecturerDashboard: React.FC = () => {
+  const { userProfile, loading } = useAuth();
+  const [activeTab, setActiveTab] = useState<'overview' | 'my_books' | 'upload' | 'withdrawals'>('overview');
+
+  const [booksList, setBooksList] = useState<Book[]>([]);
+  const [sales, setSales] = useState<any[]>([]);
+  const [salesLoading, setSalesLoading] = useState(true);
+
+  // PDF File Upload State
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Book Upload Form
+  const [uploadForm, setUploadForm] = useState({
+    title: '',
+    courseCode: '',
+    level: '100 Level',
+    price: 3000,
+    format: 'eBook' as Book['format'],
+    isPastQuestion: false,
+    description: '',
+    sampleExcerpt: '',
+  });
+
+  const [uploading, setUploading] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState(false);
+
+  // Withdrawal Form
+  const [withdrawAmount, setWithdrawAmount] = useState(5000);
+  const [withdrawSubmitting, setWithdrawSubmitting] = useState(false);
+  const [withdrawSuccess, setWithdrawSuccess] = useState(false);
+
+  useEffect(() => {
+    const loadLecturerData = async () => {
+      if (!userProfile?.uid) return;
+      setSalesLoading(true);
+      try {
+        const [booksSnap, salesSnap] = await Promise.all([
+          getDocs(query(collection(db, 'books'), where('authorUid', '==', userProfile.uid))),
+          getDocs(query(collection(db, 'purchases'), where('authorUid', '==', userProfile.uid)))
+        ]);
+        setBooksList(booksSnap.docs.map(d => ({ id: d.id, ...d.data() } as Book)));
+        setSales(salesSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+      } catch (err) {
+        console.warn('Could not load lecturer sales:', err);
+      } finally {
+        setSalesLoading(false);
+      }
+    };
+    loadLecturerData();
+  }, [userProfile?.uid]);
+
+  // Handle PDF file selection & validation
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFileError(null);
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    const file = e.target.files[0];
+    const validation = await validatePdfFile(file);
+    if (!validation.valid) {
+      setFileError(validation.error || 'Invalid PDF file selected.');
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    setSelectedFile(file);
+    // If title is empty, prefill with file name without .pdf
+    if (!uploadForm.title) {
+      const suggestedTitle = file.name.replace(/\.pdf$/i, '').replace(/[-_]/g, ' ');
+      setUploadForm(prev => ({ ...prev, title: suggestedTitle }));
+    }
+  };
+
+  const handleRemoveFile = () => {
+    setSelectedFile(null);
+    setFileError(null);
+    setUploadProgress(0);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleBookUpload = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFileError(null);
+
+    if (!selectedFile) {
+      setFileError('Please select a valid PDF material or past question document to upload.');
+      return;
+    }
+
+    setUploading(true);
+    setUploadSuccess(false);
+    setUploadProgress(10);
+
+    try {
+      const materialId = `book-${Date.now()}`;
+      const lecturerUid = userProfile?.uid || `lecturer-${Date.now()}`;
+
+      // 1. Upload PDF binary to storage & cache
+      const uploadResult = await uploadPdfMaterial(
+        selectedFile,
+        lecturerUid,
+        materialId,
+        (progress) => setUploadProgress(progress)
+      );
+
+      // 2. Create Book document
+      const newBook: Book = {
+        id: materialId,
+        title: uploadForm.title.trim(),
+        author: userProfile?.fullName || 'Lecturer Author',
+        authorUid: userProfile?.uid,
+        authorTitle: (userProfile as any)?.title || 'Dr.',
+        institution: (userProfile as any)?.institution || 'University of Lagos (UNILAG)',
+        faculty: (userProfile as any)?.faculty || 'Engineering',
+        department: (userProfile as any)?.department || 'Mechanical Engineering',
+        courseCode: uploadForm.courseCode.trim().toUpperCase(),
+        level: uploadForm.level,
+        price: Number(uploadForm.price),
+        rating: 5.0,
+        reviewCount: 0,
+        format: uploadForm.format,
+        publishedYear: new Date().getFullYear(),
+        pages: Math.max(12, Math.round(selectedFile.size / (100 * 1024))), // estimated page count
+        isbn: `978-978-${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(10 + Math.random() * 90)}`,
+        description: uploadForm.description.trim(),
+        sampleExcerpt: uploadForm.sampleExcerpt.trim() || `Official protected digital course material: ${uploadForm.title}. Authored for higher institutions.`,
+        isPastQuestion: uploadForm.isPastQuestion,
+        fileStoragePath: uploadResult.fileStoragePath,
+        fileName: uploadResult.fileName,
+        fileSize: uploadResult.fileSize,
+        mimeType: uploadResult.mimeType,
+        uploadStatus: uploadResult.uploadStatus,
+        hasPdf: true,
+        approvalStatus: 'PENDING',
+        salesCount: 0,
+        createdAt: new Date().toISOString(),
+      };
+
+      try {
+        await addDoc(collection(db, 'books'), newBook);
+      } catch (firestoreErr) {
+        console.warn('Firestore write warning:', firestoreErr);
+      }
+
+      // Add audit log entry
+      try {
+        await addDoc(collection(db, 'auditLogs'), {
+          action: 'PDF_MATERIAL_UPLOADED',
+          actorId: userProfile?.uid || 'lecturer',
+          actorRole: 'LECTURER',
+          timestamp: new Date().toISOString(),
+          details: `Uploaded PDF: "${newBook.title}" (${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB, ${selectedFile.name})`,
+          referenceId: materialId,
+        });
+      } catch (auditErr) {
+        console.warn('Audit logging:', auditErr);
+      }
+
+      setBooksList(prev => [newBook, ...prev]);
+      setUploadSuccess(true);
+      setSelectedFile(null);
+      setUploadProgress(0);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+
+      setUploadForm({
+        title: '',
+        courseCode: '',
+        level: '100 Level',
+        price: 3000,
+        format: 'eBook',
+        isPastQuestion: false,
+        description: '',
+        sampleExcerpt: '',
+      });
+    } catch (err: any) {
+      console.error('Upload Error:', err);
+      setFileError(err.message || 'Failed to upload PDF material. Please try again.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleWithdrawalRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!userProfile?.uid) return;
+    setWithdrawSubmitting(true);
+    setWithdrawSuccess(false);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch('/api/lecturer/withdrawal', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token || ''}`
+        },
+        body: JSON.stringify({
+          userUid: userProfile.uid,
+          amount: withdrawAmount
+        })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || 'Could not submit withdrawal request.');
+      }
+      setWithdrawSuccess(true);
+      setWithdrawAmount(5000);
+    } catch (err: any) {
+      console.error('Withdrawal error:', err);
+      setFileError(err.message || 'Could not submit withdrawal request.');
+    } finally {
+      setWithdrawSubmitting(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="max-w-md mx-auto my-20 p-8 bg-white border border-slate-200 rounded-2xl text-center shadow-sm space-y-4">
+        <div className="w-8 h-8 border-4 border-blue-900 border-t-transparent rounded-full animate-spin mx-auto" />
+        <h3 className="text-base font-bold text-slate-900">Loading Author Portal...</h3>
+        <p className="text-xs text-slate-500">Please wait while your author materials, sales and royalties are loaded.</p>
+      </div>
+    );
+  }
+
+  if (!userProfile) {
+    return (
+      <div className="max-w-md mx-auto my-20 p-8 bg-amber-50 border border-amber-200 rounded-2xl text-center shadow-sm space-y-3">
+        <AlertCircle className="w-10 h-10 text-amber-600 mx-auto" />
+        <h3 className="text-base font-bold text-amber-900">Lecturer Account Required</h3>
+        <p className="text-xs text-amber-800 leading-relaxed">
+          Please login with your lecturer account credentials to manage your academic publications and view royalties.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 py-8 px-4 lg:px-12 max-w-7xl mx-auto space-y-8">
+      {/* Header Banner */}
+      <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white p-6 lg:p-8 rounded-2xl shadow-lg border border-slate-800 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+        <div className="space-y-1">
+          <span className="bg-amber-400 text-slate-950 text-[10px] font-black px-2.5 py-0.5 rounded uppercase">
+            LECTURER / AUTHOR PORTAL
+          </span>
+          <h1 className="text-2xl lg:text-3xl font-black font-serif">
+            {(userProfile as any)?.title || 'Dr.'} {userProfile?.fullName || 'Lecturer'}
+          </h1>
+          <p className="text-xs text-slate-300">
+            {(userProfile as any)?.institution || 'University of Lagos'} • {(userProfile as any)?.department || 'Faculty Author'}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-4 bg-white/10 backdrop-blur-md p-4 rounded-xl border border-white/10">
+          <div>
+            <span className="text-[10px] text-blue-200 block uppercase font-bold">Earnings Balance</span>
+            <span className="text-2xl font-black text-amber-400 font-mono">
+              ₦{Number((userProfile as any)?.earningsBalance || 0).toLocaleString()}
+            </span>
+          </div>
+          <button
+            onClick={() => setActiveTab('withdrawals')}
+            className="px-3.5 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-extrabold rounded-lg shadow transition-colors"
+          >
+            Request Payout
+          </button>
+        </div>
+      </div>
+
+      {/* Tab Navigation */}
+      <div className="flex border-b border-slate-200 bg-white p-2 rounded-xl shadow-sm text-xs font-bold gap-2 overflow-x-auto">
+        <button
+          onClick={() => setActiveTab('overview')}
+          className={`px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap ${activeTab === 'overview' ? 'bg-blue-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+        >
+          Overview & Sales
+        </button>
+        <button
+          onClick={() => setActiveTab('my_books')}
+          className={`px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap ${activeTab === 'my_books' ? 'bg-blue-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+        >
+          My Academic Books ({booksList.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('upload')}
+          className={`px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap ${activeTab === 'upload' ? 'bg-blue-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+        >
+          + Upload Real PDF Material
+        </button>
+        <button
+          onClick={() => setActiveTab('withdrawals')}
+          className={`px-4 py-2.5 rounded-lg transition-colors whitespace-nowrap ${activeTab === 'withdrawals' ? 'bg-blue-800 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+        >
+          Withdrawals & Bank Account
+        </button>
+      </div>
+
+      {/* OVERVIEW TAB */}
+      {activeTab === 'overview' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+              <span className="text-xs text-slate-500 font-bold uppercase">Total Books Uploaded</span>
+              <p className="text-2xl font-black text-slate-900">{booksList.length}</p>
+            </div>
+            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+              <span className="text-xs text-slate-500 font-bold uppercase">Approved & Active</span>
+              <p className="text-2xl font-black text-emerald-600">{booksList.filter(b => b.approvalStatus === 'APPROVED').length}</p>
+            </div>
+            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+              <span className="text-xs text-slate-500 font-bold uppercase">Pending Approvals</span>
+              <p className="text-2xl font-black text-amber-500">{booksList.filter(b => b.approvalStatus === 'PENDING').length}</p>
+            </div>
+            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
+              <span className="text-xs text-slate-500 font-bold uppercase">Total Student Purchases</span>
+              <p className="text-2xl font-black text-blue-800">{sales.length}</p>
+            </div>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4">
+            <div className="flex justify-between items-center">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Student Purchases & Net Earnings</h3>
+                <p className="text-xs text-slate-500">Your earnings are the remaining percentage after platform and applicable affiliate commissions.</p>
+              </div>
+              <span className="text-sm font-black text-emerald-700">₦{sales.reduce((sum, s) => sum + Number(s.lecturerAmount || 0), 0).toLocaleString()}</span>
+            </div>
+            {salesLoading ? (
+              <p className="py-6 text-center text-xs text-slate-400">Loading sales...</p>
+            ) : sales.length === 0 ? (
+              <p className="py-6 text-center text-xs text-slate-400">No student purchases yet.</p>
+            ) : (
+              <div className="divide-y divide-slate-100 text-xs">
+                {sales.slice(0, 10).map((sale) => (
+                  <div key={sale.id} className="py-3 flex justify-between items-center gap-3">
+                    <div>
+                      <p className="font-bold text-slate-800">{sale.studentName || sale.studentUid}</p>
+                      <p className="text-slate-500">{sale.bookTitle}</p>
+                    </div>
+                    <span className="font-bold text-emerald-700">+₦{Number(sale.lecturerAmount || 0).toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MY ACADEMIC BOOKS TAB */}
+      {activeTab === 'my_books' && (
+        <div className="space-y-4">
+          <div className="flex justify-between items-center">
+            <h2 className="text-lg font-bold text-slate-900">My Uploaded Materials & Course Packs</h2>
+            <button
+              onClick={() => setActiveTab('upload')}
+              className="px-4 py-2 bg-blue-800 hover:bg-blue-900 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Upload New PDF</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {booksList.map((book) => (
+              <div key={book.id} className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-3">
+                <div className="flex justify-between items-start gap-2">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="bg-blue-100 text-blue-900 text-[10px] font-extrabold px-2 py-0.5 rounded">
+                        {book.format}
+                      </span>
+                      <span className={`text-[10px] font-black px-2 py-0.5 rounded ${
+                        book.approvalStatus === 'APPROVED' ? 'bg-emerald-100 text-emerald-800' :
+                        book.approvalStatus === 'REJECTED' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {book.approvalStatus}
+                      </span>
+                    </div>
+                    <h3 className="font-bold text-slate-900 text-sm">{book.title}</h3>
+                    <p className="text-xs text-slate-500">{book.courseCode} • {book.level}</p>
+                  </div>
+                  <span className="text-base font-extrabold text-emerald-700 font-mono">
+                    ₦{book.price.toLocaleString()}
+                  </span>
+                </div>
+
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs space-y-1">
+                  <div className="flex items-center justify-between text-slate-600">
+                    <span className="flex items-center gap-1">
+                      <FileText className="w-3.5 h-3.5 text-blue-800" />
+                      <span>PDF Document:</span>
+                    </span>
+                    <span className="font-mono text-slate-900 font-semibold truncate max-w-[180px]">
+                      {book.fileName || (book.hasPdf ? 'binary_upload.pdf' : 'Structured Course Pack')}
+                    </span>
+                  </div>
+                  {book.fileSize && (
+                    <div className="flex justify-between text-slate-500 text-[11px]">
+                      <span>File Size:</span>
+                      <span className="font-mono">{(book.fileSize / (1024 * 1024)).toFixed(2)} MB</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-slate-500 text-[11px]">
+                    <span>Sales & Royalty:</span>
+                    <span className="font-bold text-slate-800">
+  {book.salesCount || 0} purchases • ₦{sales.filter(s => s.bookId === book.id).reduce((sum, s) => sum + Number(s.lecturerAmount || 0), 0).toLocaleString()} net
+</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* UPLOAD TAB */}
+      {activeTab === 'upload' && (
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 lg:p-8 shadow-sm max-w-3xl space-y-6">
+          <div className="border-b border-slate-200 pb-3">
+            <h2 className="text-lg font-bold text-slate-900">Upload Real PDF Academic Material</h2>
+            <p className="text-xs text-slate-500">
+              Select your authentic PDF textbook, lecture course pack, or past questions document. Files are secured with CampusRead dynamic DRM.
+            </p>
+          </div>
+
+          {uploadSuccess && (
+            <div className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold rounded-xl flex items-center gap-2">
+              <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" />
+              <span>PDF Material uploaded successfully! It is now pending Super Admin review and approval.</span>
+            </div>
+          )}
+
+          {fileError && (
+            <div className="p-4 bg-red-50 border border-red-200 text-red-700 text-xs font-semibold rounded-xl flex items-center gap-2">
+              <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
+              <span>{fileError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleBookUpload} className="space-y-5 text-xs font-semibold">
+            {/* Real PDF File Dropzone */}
+            <div>
+              <label className="block text-slate-700 mb-1.5 font-bold">
+                Select PDF File <span className="text-red-500">*</span> (Max 50MB)
+              </label>
+              
+              {!selectedFile ? (
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-blue-200 hover:border-blue-500 bg-blue-50/50 hover:bg-blue-50/80 rounded-2xl p-6 text-center cursor-pointer transition-all space-y-2"
+                >
+                  <Upload className="w-8 h-8 text-blue-700 mx-auto" />
+                  <p className="text-slate-800 font-bold">Click or Drag & Drop PDF File Here</p>
+                  <p className="text-[11px] text-slate-500">
+                    Accepts authentic .pdf documents only. Magic bytes and signature verified.
+                  </p>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".pdf,application/pdf"
+                    onChange={handleFileChange}
+                    className="hidden"
+                  />
+                </div>
+              ) : (
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-blue-700 text-white rounded-lg">
+                      <FileText className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <p className="font-bold text-slate-900 text-sm truncate max-w-sm">{selectedFile.name}</p>
+                      <p className="text-slate-500 text-[11px]">
+                        {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Verified PDF Document
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleRemoveFile}
+                    className="p-1.5 text-slate-400 hover:text-red-600 rounded-lg hover:bg-white transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Upload Progress Indicator */}
+            {uploading && (
+              <div className="space-y-1.5 p-4 bg-slate-50 border border-slate-200 rounded-xl">
+                <div className="flex justify-between text-xs font-bold text-slate-700">
+                  <span>Uploading PDF Material to Secure Storage...</span>
+                  <span>{uploadProgress}%</span>
+                </div>
+                <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                  <div
+                    className="bg-blue-800 h-full transition-all duration-300 rounded-full"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-slate-700 mb-1">Book / Material Title</label>
+              <input
+                type="text"
+                required
+                value={uploadForm.title}
+                onChange={(e) => setUploadForm({ ...uploadForm, title: e.target.value })}
+                placeholder="e.g. Modern Thermodynamics & Heat Transfer"
+                className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-lg outline-none focus:bg-white focus:border-blue-700"
+              />
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-slate-700 mb-1">Course Code</label>
+                <input
+                  type="text"
+                  required
+                  value={uploadForm.courseCode}
+                  onChange={(e) => setUploadForm({ ...uploadForm, courseCode: e.target.value })}
+                  placeholder="e.g. MEG301"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-lg outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-slate-700 mb-1">Level</label>
+                <select
+                  value={uploadForm.level}
+                  onChange={(e) => setUploadForm({ ...uploadForm, level: e.target.value })}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-lg outline-none"
+                >
+                  <option value="100 Level">100 Level</option>
+                  <option value="200 Level">200 Level</option>
+                  <option value="300 Level">300 Level</option>
+                  <option value="400 Level">400 Level</option>
+                  <option value="500 Level">500 Level</option>
+                  <option value="Postgraduate">Postgraduate</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-slate-700 mb-1">Price (₦)</label>
+                <input
+                  type="number"
+                  required
+                  min={500}
+                  step={100}
+                  value={uploadForm.price}
+                  onChange={(e) => setUploadForm({ ...uploadForm, price: Number(e.target.value) })}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-lg outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-slate-700 mb-1">Format</label>
+                <select
+                  value={uploadForm.format}
+                  onChange={(e) => setUploadForm({ ...uploadForm, format: e.target.value as any })}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-lg outline-none"
+                >
+                  <option value="eBook">eBook / Textbook</option>
+                  <option value="Course Pack">Course Pack</option>
+                  <option value="Past Question">Past Question</option>
+                  <option value="Lecture Notes">Lecture Notes</option>
+                </select>
+              </div>
+              <div className="flex items-center pt-6">
+                <label className="flex items-center gap-2 cursor-pointer text-slate-800">
+                  <input
+                    type="checkbox"
+                    checked={uploadForm.isPastQuestion}
+                    onChange={(e) => setUploadForm({ ...uploadForm, isPastQuestion: e.target.checked })}
+                    className="w-4 h-4 text-blue-800 rounded"
+                  />
+                  <span>Is Solved Past Question</span>
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-slate-700 mb-1">Description & Syllabus Coverage</label>
+              <textarea
+                rows={3}
+                required
+                value={uploadForm.description}
+                onChange={(e) => setUploadForm({ ...uploadForm, description: e.target.value })}
+                placeholder="Describe key topics, target department, and exam relevance..."
+                className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-lg outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="block text-slate-700 mb-1">Sample Excerpt / Preview Summary</label>
+              <textarea
+                rows={2}
+                value={uploadForm.sampleExcerpt}
+                onChange={(e) => setUploadForm({ ...uploadForm, sampleExcerpt: e.target.value })}
+                placeholder="Provide a short sample excerpt or overview for student preview..."
+                className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-lg outline-none"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={uploading}
+              className="w-full py-3 bg-blue-800 hover:bg-blue-900 text-white font-extrabold rounded-lg shadow transition-colors disabled:opacity-50"
+            >
+              {uploading ? 'Processing & Uploading PDF...' : 'Submit PDF Material for Moderation'}
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* WITHDRAWALS TAB */}
+      {activeTab === 'withdrawals' && (
+        <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm max-w-xl space-y-4">
+          <h2 className="text-lg font-bold text-slate-900">Request Earnings Withdrawal</h2>
+
+          {withdrawSuccess && (
+            <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold rounded-lg flex items-center gap-2">
+              <CheckCircle className="w-4 h-4 text-emerald-600" />
+              <span>Withdrawal request submitted! Super Admin will process payout to your registered bank account.</span>
+            </div>
+          )}
+
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-1">
+            <span className="font-bold text-slate-700 block">Bank Account Details on File:</span>
+            <p>Bank: {(userProfile as any)?.bankName || 'First Bank of Nigeria'}</p>
+            <p>Account No: {(userProfile as any)?.accountNumber || '0123456789'}</p>
+            <p>Account Name: {(userProfile as any)?.accountName || userProfile?.fullName}</p>
+          </div>
+
+          <form onSubmit={handleWithdrawalRequest} className="space-y-3 text-xs font-semibold">
+            <div>
+              <label className="block text-slate-700 mb-1">Withdrawal Amount (₦)</label>
+              <input
+                type="number"
+                required
+                min={1000}
+                value={withdrawAmount}
+                onChange={(e) => setWithdrawAmount(Number(e.target.value))}
+                className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-lg outline-none"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={withdrawSubmitting}
+              className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold rounded-lg shadow"
+            >
+              {withdrawSubmitting ? 'Submitting...' : 'Submit Withdrawal Request'}
+            </button>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+};
+

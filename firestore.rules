@@ -1,0 +1,377 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Deny Default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Global Core Primitive Helpers
+    // -------------------------------------------------------------
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function getUserDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        (getUserDoc(request.auth.uid).role == 'SUPER_ADMIN' || getUserDoc(request.auth.uid).role == 'ADMIN');
+    }
+
+    function isLecturer() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        (getUserDoc(request.auth.uid).role == 'LECTURER' || isSuperAdmin());
+    }
+
+    // -------------------------------------------------------------
+    // Validation Blueprints
+    // -------------------------------------------------------------
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'fullName', 'email', 'role', 'status']) &&
+        data.uid is string && data.uid.size() <= 128 &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 150 &&
+        data.email is string && data.email.size() >= 5 && data.email.size() <= 150 &&
+        data.role in ['STUDENT', 'LECTURER', 'AFFILIATE', 'ADMIN', 'SUPER_ADMIN'] &&
+        data.status in ['ACTIVE', 'SUSPENDED'];
+    }
+
+    function isValidBook(data) {
+      return data.keys().hasAll(['id', 'title', 'author', 'authorUid', 'price', 'approvalStatus']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 250 &&
+        data.author is string && data.author.size() >= 2 && data.author.size() <= 150 &&
+        data.authorUid is string && data.authorUid.size() <= 128 &&
+        data.price is number && data.price >= 0 &&
+        data.approvalStatus in ['PENDING', 'APPROVED', 'REJECTED'];
+    }
+
+    function isValidPurchase(data) {
+      return data.keys().hasAll(['id', 'studentUid', 'bookId', 'transactionRef']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.studentUid is string && data.studentUid.size() <= 128 &&
+        data.bookId is string && data.bookId.size() <= 128 &&
+        data.transactionRef is string && data.transactionRef.size() <= 150 &&
+        (!('price' in data) || (data.price is number && data.price >= 0));
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll(['id', 'studentUid', 'bookId', 'amount', 'status', 'reference']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.studentUid is string && data.studentUid.size() <= 128 &&
+        data.bookId is string && data.bookId.size() <= 128 &&
+        data.amount is number && data.amount >= 0 &&
+        data.status in ['PENDING', 'COMPLETED', 'FAILED', 'VERIFIED'] &&
+        data.reference is string && data.reference.size() <= 150;
+    }
+
+    function isValidWithdrawal(data) {
+      return data.keys().hasAll(['id', 'userUid', 'amount', 'status', 'bankName', 'accountNumber']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.userUid is string && data.userUid.size() <= 128 &&
+        data.amount is number && data.amount > 0 &&
+        data.status in ['PENDING', 'APPROVED', 'REJECTED', 'PAID'] &&
+        data.bankName is string && data.bankName.size() <= 100 &&
+        data.accountNumber is string && data.accountNumber.size() <= 30;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['userId', 'title', 'message', 'read']) &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.title is string && data.title.size() <= 200 &&
+        data.message is string && data.message.size() <= 1000 &&
+        data.read is bool;
+    }
+
+    function isValidReadingProgress(data) {
+      return data.keys().hasAll(['userId', 'bookId', 'currentPage']) &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.bookId is string && data.bookId.size() <= 128 &&
+        data.currentPage is number && data.currentPage >= 1;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['action', 'timestamp']) &&
+        data.action is string && data.action.size() <= 200;
+    }
+
+    function isValidWalletTransaction(data) {
+      return data.keys().hasAll(['uid', 'reference', 'amount', 'currency', 'type', 'status', 'paymentProvider']) &&
+        data.uid is string && data.uid.size() <= 128 &&
+        data.reference is string && data.reference.size() <= 150 &&
+        data.amount is number && data.amount > 0 &&
+        data.currency in ['NGN', 'USD'] &&
+        data.type in ['WALLET_FUNDING', 'BOOK_PURCHASE', 'ADJUSTMENT', 'WITHDRAWAL'] &&
+        data.status in ['PENDING', 'SUCCESS', 'FAILED'] &&
+        data.paymentProvider in ['FLUTTERWAVE', 'WALLET', 'SYSTEM'];
+    }
+
+    // -------------------------------------------------------------
+    // Users Collection Rules
+    // -------------------------------------------------------------
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isSuperAdmin() || isSignedIn());
+      allow list: if isSuperAdmin();
+
+      // Public registration: Restricted to STUDENT, LECTURER, AFFILIATE roles only
+      allow create: if isValidId(userId) &&
+        isOwner(userId) &&
+        isValidUser(incoming()) &&
+        incoming().uid == userId &&
+        incoming().role in ['STUDENT', 'LECTURER', 'AFFILIATE'] &&
+        incoming().status == 'ACTIVE';
+
+      // Updates: Super Admin can update all; Users can update profile fields but NOT promote role or falsify balances
+      allow update: if isValidId(userId) && (
+        isSuperAdmin() || (
+          isOwner(userId) &&
+          isValidUser(incoming()) &&
+          incoming().uid == existing().uid &&
+          incoming().role == existing().role &&
+          (!('accountType' in existing()) || incoming().accountType == existing().accountType) &&
+          (!('walletBalance' in existing()) || incoming().walletBalance == existing().walletBalance) &&
+          (!('earningsBalance' in existing()) || incoming().earningsBalance == existing().earningsBalance) &&
+          (!('commissionBalance' in existing()) || incoming().commissionBalance == existing().commissionBalance)
+        )
+      );
+
+      allow delete: if isValidId(userId) && isSuperAdmin();
+    }
+
+    // -------------------------------------------------------------
+    // Books Collection Rules
+    // -------------------------------------------------------------
+    match /books/{bookId} {
+      allow get: if isValidId(bookId) && (
+        resource.data.approvalStatus == 'APPROVED' ||
+        isSuperAdmin() ||
+        (isSignedIn() && resource.data.authorUid == request.auth.uid)
+      );
+
+      allow list: if resource.data.approvalStatus == 'APPROVED' ||
+        isSuperAdmin() ||
+        (isSignedIn() && resource.data.authorUid == request.auth.uid);
+
+      // Create: Verified Lecturer or Super Admin
+      allow create: if isValidId(bookId) &&
+        isValidBook(incoming()) &&
+        (
+          isSuperAdmin() ||
+          (isLecturer() && incoming().authorUid == request.auth.uid && incoming().approvalStatus == 'PENDING')
+        );
+
+      // Update: Super Admin or Book Author (Author cannot change approvalStatus)
+      allow update: if isValidId(bookId) &&
+        isValidBook(incoming()) &&
+        (
+          isSuperAdmin() ||
+          (
+            isSignedIn() && 
+            existing().authorUid == request.auth.uid && 
+            incoming().authorUid == existing().authorUid &&
+            incoming().approvalStatus == existing().approvalStatus
+          )
+        );
+
+      allow delete: if isValidId(bookId) && (
+        isSuperAdmin() ||
+        (isSignedIn() && existing().authorUid == request.auth.uid)
+      );
+    }
+
+    // -------------------------------------------------------------
+    // Purchases Collection Rules
+    // -------------------------------------------------------------
+    match /purchases/{purchaseId} {
+      allow get: if isValidId(purchaseId) && (
+        isSuperAdmin() ||
+        (isSignedIn() && (resource.data.studentUid == request.auth.uid || resource.data.authorUid == request.auth.uid))
+      );
+
+      allow list: if isSuperAdmin() || (
+        isSignedIn() && (resource.data.studentUid == request.auth.uid || resource.data.authorUid == request.auth.uid)
+      );
+
+      // Create: Super Admin or Authenticated Student for an APPROVED book
+      allow create: if isValidId(purchaseId) &&
+        isValidPurchase(incoming()) &&
+        (
+          isSuperAdmin() ||
+          (
+            isSignedIn() && 
+            incoming().studentUid == request.auth.uid &&
+            exists(/databases/$(database)/documents/books/$(incoming().bookId)) &&
+            get(/databases/$(database)/documents/books/$(incoming().bookId)).data.approvalStatus == 'APPROVED' &&
+            (purchaseId == request.auth.uid + '_' + incoming().bookId || purchaseId == request.auth.uid + '-' + incoming().bookId)
+          )
+        );
+
+      allow update, delete: if isValidId(purchaseId) && isSuperAdmin();
+    }
+
+    // -------------------------------------------------------------
+    // Orders Collection Rules
+    // -------------------------------------------------------------
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && (
+        isSuperAdmin() ||
+        (isSignedIn() && resource.data.studentUid == request.auth.uid)
+      );
+
+      allow list: if isSuperAdmin() || (
+        isSignedIn() && resource.data.studentUid == request.auth.uid
+      );
+
+      allow create: if isValidId(orderId) &&
+        isValidOrder(incoming()) &&
+        isSignedIn() &&
+        incoming().studentUid == request.auth.uid;
+
+      allow update: if isValidId(orderId) &&
+        isValidOrder(incoming()) &&
+        (
+          isSuperAdmin() ||
+          (isSignedIn() && existing().studentUid == request.auth.uid && incoming().studentUid == existing().studentUid)
+        );
+
+      allow delete: if isValidId(orderId) && isSuperAdmin();
+    }
+
+    // -------------------------------------------------------------
+    // Withdrawals Collection Rules
+    // -------------------------------------------------------------
+    match /withdrawals/{withdrawalId} {
+      allow get: if isValidId(withdrawalId) && (
+        isSuperAdmin() ||
+        (isSignedIn() && resource.data.userUid == request.auth.uid)
+      );
+
+      allow list: if isSuperAdmin() || (
+        isSignedIn() && resource.data.userUid == request.auth.uid
+      );
+
+      allow create: if isValidId(withdrawalId) &&
+        isValidWithdrawal(incoming()) &&
+        isSignedIn() &&
+        incoming().userUid == request.auth.uid &&
+        incoming().status == 'PENDING';
+
+      allow update, delete: if isValidId(withdrawalId) && isSuperAdmin();
+    }
+
+    // -------------------------------------------------------------
+    // Settings Collection Rules
+    // -------------------------------------------------------------
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if true;
+      allow write: if isValidId(settingId) && isSuperAdmin();
+    }
+
+    // -------------------------------------------------------------
+    // Institutions, Faculties, Departments
+    // -------------------------------------------------------------
+    match /institutions/{instId} {
+      allow get: if isValidId(instId);
+      allow list: if true;
+      allow write: if isValidId(instId) && isSuperAdmin();
+    }
+
+    match /faculties/{facId} {
+      allow get: if isValidId(facId);
+      allow list: if true;
+      allow write: if isValidId(facId) && isSuperAdmin();
+    }
+
+    match /departments/{deptId} {
+      allow get: if isValidId(deptId);
+      allow list: if true;
+      allow write: if isValidId(deptId) && isSuperAdmin();
+    }
+
+    // -------------------------------------------------------------
+    // Notifications Collection Rules
+    // -------------------------------------------------------------
+    match /notifications/{notifId} {
+      allow get: if isValidId(notifId) && isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(notifId) && isValidNotification(incoming()) && isSignedIn();
+      allow update: if isValidId(notifId) &&
+        isValidNotification(incoming()) &&
+        isSignedIn() &&
+        existing().userId == request.auth.uid &&
+        incoming().userId == existing().userId;
+      allow delete: if isValidId(notifId) && (
+        isSuperAdmin() || (isSignedIn() && existing().userId == request.auth.uid)
+      );
+    }
+
+    // -------------------------------------------------------------
+    // Reading Progress Collection Rules
+    // -------------------------------------------------------------
+    match /readingProgress/{progressId} {
+      allow get: if isValidId(progressId) && isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create, update: if isValidId(progressId) &&
+        isValidReadingProgress(incoming()) &&
+        isSignedIn() &&
+        incoming().userId == request.auth.uid;
+      allow delete: if isValidId(progressId) && (
+        isSuperAdmin() || (isSignedIn() && existing().userId == request.auth.uid)
+      );
+    }
+
+    // -------------------------------------------------------------
+    // Wallet Transactions Collection Rules
+    // -------------------------------------------------------------
+    match /walletTransactions/{txId} {
+      allow get: if isValidId(txId) && (
+        isSuperAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid)
+      );
+      allow list: if isSuperAdmin() || (
+        isSignedIn() && resource.data.uid == request.auth.uid
+      );
+      allow create: if isValidId(txId) && (
+        isSuperAdmin() || (
+          isSignedIn() && 
+          incoming().uid == request.auth.uid && 
+          isValidWalletTransaction(incoming()) &&
+          incoming().status == 'PENDING'
+        )
+      );
+      allow update, delete: if isValidId(txId) && isSuperAdmin();
+    }
+
+    // -------------------------------------------------------------
+    // Audit Logs Collection Rules
+    // -------------------------------------------------------------
+    match /auditLogs/{logId} {
+      allow get: if isValidId(logId) && isSuperAdmin();
+      allow list: if isSuperAdmin();
+      allow create: if isValidId(logId) && isValidAuditLog(incoming()) && isSignedIn();
+      allow update, delete: if false; // Immutable audit trails
+    }
+  }
+}

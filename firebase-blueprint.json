@@ -1,0 +1,133 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User accounts including students, lecturers, affiliates, and admins",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "fullName": { "type": "string" },
+        "email": { "type": "string" },
+        "role": {
+          "type": "string",
+          "enum": ["STUDENT", "LECTURER", "AFFILIATE", "ADMIN", "SUPER_ADMIN"]
+        },
+        "accountType": { "type": "string" },
+        "matricNumber": { "type": "string" },
+        "institution": { "type": "string" },
+        "faculty": { "type": "string" },
+        "department": { "type": "string" },
+        "level": { "type": "string" },
+        "title": { "type": "string" },
+        "phone": { "type": "string" },
+        "bankName": { "type": "string" },
+        "accountNumber": { "type": "string" },
+        "accountName": { "type": "string" },
+        "affiliateCode": { "type": "string" },
+        "status": { "type": "string", "enum": ["ACTIVE", "SUSPENDED"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "fullName", "email", "role", "status"]
+    },
+    "Book": {
+      "title": "Book Material",
+      "description": "Academic books, lecture notes, and course materials",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "author": { "type": "string" },
+        "authorUid": { "type": "string" },
+        "institution": { "type": "string" },
+        "faculty": { "type": "string" },
+        "department": { "type": "string" },
+        "courseCode": { "type": "string" },
+        "level": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "coverUrl": { "type": "string" },
+        "contentUrl": { "type": "string" },
+        "isPastQuestion": { "type": "boolean" },
+        "approvalStatus": { "type": "string", "enum": ["PENDING", "APPROVED", "REJECTED"] },
+        "isFeatured": { "type": "boolean" },
+        "salesCount": { "type": "number" },
+        "rating": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "title", "author", "authorUid", "price", "approvalStatus"]
+    },
+    "Purchase": {
+      "title": "Book Purchase",
+      "description": "Access privileges for students on purchased academic materials",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentUid": { "type": "string" },
+        "bookId": { "type": "string" },
+        "bookTitle": { "type": "string" },
+        "authorUid": { "type": "string" },
+        "price": { "type": "number" },
+        "transactionRef": { "type": "string" },
+        "purchaseDate": { "type": "string" }
+      },
+      "required": ["id", "studentUid", "bookId", "transactionRef"]
+    },
+    "AppSettings": {
+      "title": "App Settings",
+      "description": "Global application and download settings",
+      "type": "object",
+      "properties": {
+        "androidApkUrl": { "type": "string" },
+        "playStoreUrl": { "type": "string" },
+        "appStoreUrl": { "type": "string" },
+        "testFlightUrl": { "type": "string" },
+        "showAppBanner": { "type": "boolean" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "WalletTransaction": {
+      "title": "Wallet Transaction",
+      "description": "Immutable ledger record for student wallet funding and book payments",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "uid": { "type": "string" },
+        "reference": { "type": "string" },
+        "flutterwaveTransactionId": { "type": "string" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string", "enum": ["NGN", "USD"] },
+        "type": { "type": "string", "enum": ["WALLET_FUNDING", "BOOK_PURCHASE", "ADJUSTMENT", "WITHDRAWAL"] },
+        "status": { "type": "string", "enum": ["PENDING", "SUCCESS", "FAILED"] },
+        "paymentProvider": { "type": "string", "enum": ["FLUTTERWAVE", "WALLET", "SYSTEM"] },
+        "createdAt": { "type": "string" },
+        "verifiedAt": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "required": ["uid", "reference", "amount", "currency", "type", "status", "paymentProvider"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/books/{bookId}": {
+      "schema": "Book",
+      "description": "Academic books and materials"
+    },
+    "/purchases/{purchaseId}": {
+      "schema": "Purchase",
+      "description": "Completed student purchases"
+    },
+    "/walletTransactions/{txId}": {
+      "schema": "WalletTransaction",
+      "description": "Wallet funding and transaction records"
+    },
+    "/settings/appSettings": {
+      "schema": "AppSettings",
+      "description": "Global platform configurations"
+    }
+  }
+}

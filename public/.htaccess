@@ -1,0 +1,10 @@
+# CampusRead Production Hostinger Web Root Protection
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Block direct access to raw PDF files
+  RewriteRule \.(pdf)$ - [F,L,NC]
+</IfModule>
+
+Options -Indexes
