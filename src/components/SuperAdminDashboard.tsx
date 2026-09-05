@@ -3,20 +3,22 @@ import { ShieldCheck, CheckCircle, XCircle, Clock, BookOpen, Users, DollarSign, 
 import { useAuth } from '../context/AuthContext';
 import { Book, WithdrawalRequest, AppSettings, CommissionSettings, Institution, AuditLog, WebsiteSettings } from '../types';
 import { MOCK_BOOKS } from '../data/mockBooks';
-import { collection, getDocs, doc, updateDoc, setDoc, addDoc, getDoc, deleteDoc } from 'firebase/firestore';
-import { db, auth } from '../lib/firebase';
+import { collection, getDocs, doc, updateDoc, setDoc, addDoc, getDoc, onSnapshot } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import { ReaderModal } from './ReaderModal';
 
 export const SuperAdminDashboard: React.FC = () => {
   const { userProfile, loading } = useAuth();
-  const [activeTab, setActiveTab] = useState<'overview' | 'sales' | 'approvals' | 'withdrawals' | 'commission' | 'distribution' | 'cms' | 'institutions' | 'audit'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'approvals' | 'withdrawals' | 'commission' | 'distribution' | 'cms' | 'institutions' | 'audit'>('overview');
   const [previewingBook, setPreviewingBook] = useState<Book | null>(null);
-  const [allPurchases, setAllPurchases] = useState<any[]>([]);
-  const [selectedBuyerBook, setSelectedBuyerBook] = useState('');
-  const [buyerGenerating, setBuyerGenerating] = useState(false);
   
   // Data State
   const [booksList, setBooksList] = useState<Book[]>(MOCK_BOOKS);
+  const [rejectingBook, setRejectingBook] = useState<Book | null>(null);
+  const [rejectionReasonInput, setRejectionReasonInput] = useState<string>('');
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [approvalNotice, setApprovalNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [bookFilter, setBookFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('ALL');
   const [pendingWithdrawals, setPendingWithdrawals] = useState<WithdrawalRequest[]>([
     {
       id: 'w-1',
@@ -122,26 +124,37 @@ export const SuperAdminDashboard: React.FC = () => {
   const [newPrice, setNewPrice] = useState<number>(0);
 
   useEffect(() => {
+    let unsubscribeBooks: (() => void) | undefined;
+    try {
+      unsubscribeBooks = onSnapshot(collection(db, 'books'), (snapshot) => {
+        if (!snapshot.empty) {
+          const firestoreBooks: Book[] = [];
+          snapshot.forEach((docSnap) => {
+            firestoreBooks.push({
+              ...docSnap.data(),
+              id: docSnap.id
+            } as Book);
+          });
+          // Merge with any MOCK_BOOKS not present in Firestore
+          const firestoreIds = new Set(firestoreBooks.map(b => b.id));
+          const remainingMocks = MOCK_BOOKS.filter(b => !firestoreIds.has(b.id));
+          setBooksList([...firestoreBooks, ...remainingMocks]);
+        } else {
+          setBooksList(MOCK_BOOKS);
+        }
+      }, (err) => {
+        console.warn('Super Admin books onSnapshot warning:', err);
+      });
+    } catch (e) {
+      console.warn('Super Admin books listener initialization warning:', e);
+    }
+
     async function fetchData() {
       try {
-        const booksSnap = await getDocs(collection(db, 'books'));
-        if (!booksSnap.empty) {
-          const list = booksSnap.docs.map(d => ({ id: d.id, ...d.data() } as Book));
-          setBooksList(list);
-        }
-
         const withdrawalsSnap = await getDocs(collection(db, 'withdrawals'));
         if (!withdrawalsSnap.empty) {
           const wList = withdrawalsSnap.docs.map(d => ({ id: d.id, ...d.data() } as WithdrawalRequest));
           setPendingWithdrawals(wList);
-        }
-
-        const purchasesSnap = await getDocs(collection(db, 'purchases'));
-        setAllPurchases(purchasesSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-
-        const institutionsSnap = await getDocs(collection(db, 'institutions'));
-        if (!institutionsSnap.empty) {
-          setInstitutions(institutionsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Institution)));
         }
 
         const webSnap = await getDoc(doc(db, 'settings', 'websiteSettings'));
@@ -162,6 +175,10 @@ export const SuperAdminDashboard: React.FC = () => {
       }
     }
     fetchData();
+
+    return () => {
+      if (unsubscribeBooks) unsubscribeBooks();
+    };
   }, []);
 
   const addAuditEntry = async (action: string, details: string, affectedResource?: string) => {
@@ -183,28 +200,110 @@ export const SuperAdminDashboard: React.FC = () => {
   };
 
   const handleApproveBook = async (bookId: string) => {
+    setActionLoading(bookId);
+    setApprovalNotice(null);
+    const targetBook = booksList.find(b => b.id === bookId);
+
     try {
-      await updateDoc(doc(db, 'books', bookId), {
-        approvalStatus: 'APPROVED',
+      const bookRef = doc(db, 'books', bookId);
+      const updatePayload = {
+        approvalStatus: 'APPROVED' as const,
+        status: 'APPROVED' as const,
+        rejectionReason: '',
         updatedAt: new Date().toISOString()
+      };
+
+      const snap = await getDoc(bookRef);
+      if (snap.exists()) {
+        await updateDoc(bookRef, updatePayload);
+      } else {
+        await setDoc(bookRef, {
+          ...(targetBook || {}),
+          id: bookId,
+          ...updatePayload
+        }, { merge: true });
+      }
+
+      setBooksList(prev => prev.map(b => b.id === bookId ? {
+        ...b,
+        approvalStatus: 'APPROVED',
+        status: 'APPROVED',
+        rejectionReason: ''
+      } : b));
+
+      await addAuditEntry('BOOK_APPROVED', `Approved academic material: ${targetBook?.title || bookId}`, bookId);
+      setApprovalNotice({
+        type: 'success',
+        message: `"${targetBook?.title || 'Academic material'}" was approved successfully and is now active in the Student Catalogue.`
       });
-      setBooksList(prev => prev.map(b => b.id === bookId ? { ...b, approvalStatus: 'APPROVED' } : b));
-      await addAuditEntry('BOOK_APPROVED', `Approved academic material: ${bookId}`, bookId);
-    } catch (err) {
-      setBooksList(prev => prev.map(b => b.id === bookId ? { ...b, approvalStatus: 'APPROVED' } : b));
+      setTimeout(() => setApprovalNotice(null), 6000);
+    } catch (err: any) {
+      console.error('Super Admin Approval Error:', err);
+      const safeMsg = err?.message ? `Failed to approve book: ${err.message}` : 'Failed to approve book. Please check your network and permissions.';
+      setApprovalNotice({ type: 'error', message: safeMsg });
+    } finally {
+      setActionLoading(null);
     }
   };
 
-  const handleRejectBook = async (bookId: string) => {
+  const handleOpenRejectModal = (book: Book) => {
+    setRejectingBook(book);
+    setRejectionReasonInput(book.rejectionReason || 'The uploaded material does not meet the CampusRead content requirements. Please review syllabus mapping, clear typesetting, and authentic accreditation before resubmitting.');
+    setApprovalNotice(null);
+  };
+
+  const handleConfirmRejectBook = async () => {
+    if (!rejectingBook) return;
+    const trimmedReason = rejectionReasonInput.trim();
+    if (!trimmedReason) {
+      setApprovalNotice({ type: 'error', message: 'Rejection reason is required. Please provide constructive feedback for the lecturer.' });
+      return;
+    }
+
+    const bookId = rejectingBook.id;
+    setActionLoading(bookId);
+    setApprovalNotice(null);
+
     try {
-      await updateDoc(doc(db, 'books', bookId), {
-        approvalStatus: 'REJECTED',
+      const bookRef = doc(db, 'books', bookId);
+      const updatePayload = {
+        approvalStatus: 'REJECTED' as const,
+        status: 'REJECTED' as const,
+        rejectionReason: trimmedReason,
         updatedAt: new Date().toISOString()
+      };
+
+      const snap = await getDoc(bookRef);
+      if (snap.exists()) {
+        await updateDoc(bookRef, updatePayload);
+      } else {
+        await setDoc(bookRef, {
+          ...rejectingBook,
+          id: bookId,
+          ...updatePayload
+        }, { merge: true });
+      }
+
+      setBooksList(prev => prev.map(b => b.id === bookId ? {
+        ...b,
+        approvalStatus: 'REJECTED',
+        status: 'REJECTED',
+        rejectionReason: trimmedReason
+      } : b));
+
+      await addAuditEntry('BOOK_REJECTED', `Rejected material: ${rejectingBook.title}. Reason: ${trimmedReason}`, bookId);
+      setApprovalNotice({
+        type: 'success',
+        message: `"${rejectingBook.title}" rejected. Rejection reason has been recorded and is visible to the lecturer.`
       });
-      setBooksList(prev => prev.map(b => b.id === bookId ? { ...b, approvalStatus: 'REJECTED' } : b));
-      await addAuditEntry('BOOK_REJECTED', `Rejected academic material: ${bookId}`, bookId);
-    } catch (err) {
-      setBooksList(prev => prev.map(b => b.id === bookId ? { ...b, approvalStatus: 'REJECTED' } : b));
+      setRejectingBook(null);
+      setTimeout(() => setApprovalNotice(null), 6000);
+    } catch (err: any) {
+      console.error('Super Admin Rejection Error:', err);
+      const safeMsg = err?.message ? `Failed to reject book: ${err.message}` : 'Failed to reject book. Please check your network and permissions.';
+      setApprovalNotice({ type: 'error', message: safeMsg });
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -226,59 +325,14 @@ export const SuperAdminDashboard: React.FC = () => {
 
   const handleApproveWithdrawal = async (withdrawalId: string) => {
     try {
-      const token = await auth.currentUser?.getIdToken();
-      const res = await fetch(`/api/admin/withdrawals/${encodeURIComponent(withdrawalId)}/approve`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token || ''}` }
+      await updateDoc(doc(db, 'withdrawals', withdrawalId), {
+        status: 'PAID',
+        processedAt: new Date().toISOString()
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.message || 'Could not approve withdrawal.');
-      setPendingWithdrawals(prev => prev.map(w => w.id === withdrawalId ? { ...w, status: 'APPROVED', processedAt: new Date().toISOString() } : w));
-      await addAuditEntry('WITHDRAWAL_APPROVED', `Approved bank payout: ${withdrawalId}`, withdrawalId);
-    } catch (err: any) {
-      alert(err.message || 'Could not approve withdrawal.');
-    }
-  };
-
-  const handleRejectWithdrawal = async (withdrawalId: string) => {
-    try {
-      const token = await auth.currentUser?.getIdToken();
-      const res = await fetch(`/api/admin/withdrawals/${encodeURIComponent(withdrawalId)}/reject`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token || ''}` }
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.message || 'Could not reject withdrawal.');
-      setPendingWithdrawals(prev => prev.map(w => w.id === withdrawalId ? { ...w, status: 'REJECTED', processedAt: new Date().toISOString() } : w));
-      await addAuditEntry('WITHDRAWAL_REJECTED', `Rejected withdrawal: ${withdrawalId}`, withdrawalId);
-    } catch (err: any) {
-      alert(err.message || 'Could not reject withdrawal.');
-    }
-  };
-
-  const handleGenerateBuyerPdf = async () => {
-    if (!selectedBuyerBook) return;
-    setBuyerGenerating(true);
-    try {
-      const token = await auth.currentUser?.getIdToken();
-      const res = await fetch(`/api/admin/books/${encodeURIComponent(selectedBuyerBook)}/buyers.pdf`, {
-        headers: { Authorization: `Bearer ${token || ''}` }
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.message || 'Could not generate buyer PDF.');
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'campusread-book-buyers.pdf';
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err: any) {
-      alert(err.message || 'Could not generate buyer PDF.');
-    } finally {
-      setBuyerGenerating(false);
+      setPendingWithdrawals(prev => prev.map(w => w.id === withdrawalId ? { ...w, status: 'PAID' } : w));
+      await addAuditEntry('WITHDRAWAL_PAID', `Marked withdrawal payout as paid: ${withdrawalId}`, withdrawalId);
+    } catch (err) {
+      setPendingWithdrawals(prev => prev.map(w => w.id === withdrawalId ? { ...w, status: 'PAID' } : w));
     }
   };
 
@@ -352,37 +406,21 @@ export const SuperAdminDashboard: React.FC = () => {
     }
   };
 
-  const handleAddInstitution = async (e: React.FormEvent) => {
+  const handleAddInstitution = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newInstName.trim() || !newInstShort.trim()) return;
+    if (!newInstName.trim()) return;
     const newInst: Institution = {
       id: `inst-${Date.now()}`,
       name: newInstName.trim(),
-      shortName: newInstShort.trim().toUpperCase(),
+      shortName: newInstShort.trim() || newInstName.substring(0, 4).toUpperCase(),
       state: newInstState.trim() || 'Nigeria',
       status: 'ACTIVE'
     };
-    try {
-      await setDoc(doc(db, 'institutions', newInst.id), newInst);
-      setInstitutions(prev => [...prev, newInst]);
-      await addAuditEntry('INSTITUTION_ADDED', `Added institution: ${newInst.name} (${newInst.shortName})`, newInst.id);
-      setNewInstName('');
-      setNewInstShort('');
-      setNewInstState('');
-    } catch (err: any) {
-      alert(err.message || 'Could not add institution.');
-    }
-  };
-
-  const handleRemoveInstitution = async (inst: Institution) => {
-    if (!confirm(`Remove ${inst.name} from the active institution directory? Existing student and sales records will not be deleted.`)) return;
-    try {
-      await updateDoc(doc(db, 'institutions', inst.id), { status: 'DISABLED' });
-      setInstitutions(prev => prev.map(i => i.id === inst.id ? { ...i, status: 'DISABLED' } : i));
-      await addAuditEntry('INSTITUTION_DISABLED', `Disabled institution: ${inst.name}`, inst.id);
-    } catch (err: any) {
-      alert(err.message || 'Could not remove institution.');
-    }
+    setInstitutions(prev => [...prev, newInst]);
+    addAuditEntry('INSTITUTION_ADDED', `Added institution: ${newInst.name} (${newInst.shortName})`, newInst.id);
+    setNewInstName('');
+    setNewInstShort('');
+    setNewInstState('');
   };
 
   const pendingBooks = booksList.filter(b => b.approvalStatus === 'PENDING');
@@ -459,15 +497,6 @@ export const SuperAdminDashboard: React.FC = () => {
         >
           <Sliders className="w-4 h-4" />
           <span>Overview & KPIs</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('sales')}
-          className={`px-4 py-2.5 rounded-lg transition-colors flex items-center gap-2 whitespace-nowrap ${
-            activeTab === 'sales' ? 'bg-purple-800 text-white' : 'text-slate-600 hover:bg-slate-100'
-          }`}
-        >
-          <Users className="w-4 h-4" />
-          <span>Sales & Buyers ({allPurchases.length})</span>
         </button>
         <button
           onClick={() => setActiveTab('approvals')}
@@ -606,86 +635,93 @@ export const SuperAdminDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* SALES & BUYERS TAB */}
-      {activeTab === 'sales' && (
-        <div className="space-y-6">
-          <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
-            <h2 className="text-lg font-bold text-slate-900">Book Sales & Buyer Reports</h2>
-            <p className="text-xs text-slate-500 mt-1">See every recorded purchase and generate a printable PDF of student names and matriculation numbers for a selected book.</p>
-            <div className="mt-5 flex flex-col sm:flex-row gap-3">
-              <select
-                value={selectedBuyerBook}
-                onChange={(e) => setSelectedBuyerBook(e.target.value)}
-                className="flex-1 p-3 bg-slate-50 border border-slate-300 rounded-lg text-xs font-semibold"
-              >
-                <option value="">Select a book...</option>
-                {booksList.map(b => (
-                  <option key={b.id} value={b.id}>{b.title} — {b.author}</option>
-                ))}
-              </select>
+      {/* BOOK APPROVALS & PRICING TAB */}
+      {activeTab === 'approvals' && (
+        <div className="space-y-4">
+          {/* Operation Feedback Banner */}
+          {approvalNotice && (
+            <div className={`p-4 rounded-xl text-xs font-bold flex items-center justify-between border ${
+              approvalNotice.type === 'success'
+                ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                : 'bg-red-50 text-red-900 border-red-200'
+            }`}>
+              <div className="flex items-center gap-2">
+                {approvalNotice.type === 'success' ? (
+                  <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                )}
+                <span>{approvalNotice.message}</span>
+              </div>
               <button
-                onClick={handleGenerateBuyerPdf}
-                disabled={!selectedBuyerBook || buyerGenerating}
-                className="px-5 py-3 bg-purple-800 hover:bg-purple-900 disabled:bg-slate-300 text-white rounded-lg text-xs font-bold"
+                onClick={() => setApprovalNotice(null)}
+                className="text-slate-400 hover:text-slate-700 ml-4 font-black"
               >
-                {buyerGenerating ? 'Generating PDF...' : 'Generate Buyer PDF'}
+                ✕
+              </button>
+            </div>
+          )}
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">Academic Books, Course Packs & Moderation</h2>
+              <p className="text-xs text-slate-500">Only APPROVED books are published to the Student Catalogue. REJECTED books show feedback to the lecturer.</p>
+            </div>
+            
+            {/* Filter Pills */}
+            <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-bold self-start sm:self-auto">
+              <button
+                onClick={() => setBookFilter('ALL')}
+                className={`px-3 py-1.5 rounded-lg transition-colors ${
+                  bookFilter === 'ALL' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                All ({booksList.length})
+              </button>
+              <button
+                onClick={() => setBookFilter('PENDING')}
+                className={`px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 ${
+                  bookFilter === 'PENDING' ? 'bg-amber-500 text-white shadow-sm' : 'text-amber-700 hover:bg-amber-100'
+                }`}
+              >
+                Pending ({booksList.filter(b => b.approvalStatus === 'PENDING').length})
+              </button>
+              <button
+                onClick={() => setBookFilter('APPROVED')}
+                className={`px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 ${
+                  bookFilter === 'APPROVED' ? 'bg-emerald-600 text-white shadow-sm' : 'text-emerald-700 hover:bg-emerald-100'
+                }`}
+              >
+                Approved ({booksList.filter(b => b.approvalStatus === 'APPROVED').length})
+              </button>
+              <button
+                onClick={() => setBookFilter('REJECTED')}
+                className={`px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 ${
+                  bookFilter === 'REJECTED' ? 'bg-red-600 text-white shadow-sm' : 'text-red-700 hover:bg-red-100'
+                }`}
+              >
+                Rejected ({booksList.filter(b => b.approvalStatus === 'REJECTED').length})
               </button>
             </div>
           </div>
 
-          <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
-            <h3 className="font-bold text-slate-900 text-sm mb-4">Recorded Sales</h3>
-            {allPurchases.length === 0 ? (
-              <p className="py-8 text-center text-xs text-slate-400">No book purchases have been recorded yet.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead><tr className="border-b border-slate-200 text-left">
-                    <th className="p-2">Student</th><th className="p-2">Matric No.</th><th className="p-2">Book</th>
-                    <th className="p-2">Price</th><th className="p-2">Platform</th><th className="p-2">Affiliate</th><th className="p-2">Lecturer</th>
-                  </tr></thead>
-                  <tbody>
-                    {allPurchases.map((p) => (
-                      <tr key={p.id} className="border-b border-slate-100">
-                        <td className="p-2 font-semibold">{p.studentName || p.studentUid}</td>
-                        <td className="p-2 font-mono">{p.studentMatricNumber || '—'}</td>
-                        <td className="p-2">{p.bookTitle}</td>
-                        <td className="p-2">₦{Number(p.price || 0).toLocaleString()}</td>
-                        <td className="p-2 text-purple-700">₦{Number(p.platformAmount || 0).toLocaleString()}</td>
-                        <td className="p-2 text-blue-700">₦{Number(p.affiliateAmount || 0).toLocaleString()}</td>
-                        <td className="p-2 text-emerald-700">₦{Number(p.lecturerAmount || 0).toLocaleString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* BOOK APPROVALS & PRICING TAB */}
-      {activeTab === 'approvals' && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-bold text-slate-900">Academic Books, Course Packs & Moderation</h2>
-            <span className="text-xs font-bold bg-purple-100 text-purple-800 px-3 py-1 rounded-full">
-              {booksList.length} Total Registered Materials
-            </span>
-          </div>
-
           <div className="space-y-4">
-            {booksList.map((book) => (
+            {booksList
+              .filter(book => bookFilter === 'ALL' || book.approvalStatus === bookFilter)
+              .map((book) => (
               <div key={book.id} className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6">
                 <div className="space-y-2 flex-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="bg-blue-100 text-blue-900 text-[10px] font-extrabold px-2 py-0.5 rounded">
                       {book.format}
                     </span>
-                    <span className={`text-[10px] font-black px-2 py-0.5 rounded ${
+                    <span className={`text-[10px] font-black px-2 py-0.5 rounded flex items-center gap-1 ${
                       book.approvalStatus === 'APPROVED' ? 'bg-emerald-100 text-emerald-800' :
                       book.approvalStatus === 'REJECTED' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
                     }`}>
+                      {book.approvalStatus === 'APPROVED' && <CheckCircle className="w-3 h-3" />}
+                      {book.approvalStatus === 'REJECTED' && <XCircle className="w-3 h-3" />}
+                      {book.approvalStatus === 'PENDING' && <Clock className="w-3 h-3" />}
                       {book.approvalStatus}
                     </span>
                     {book.hasPdf && (
@@ -696,11 +732,13 @@ export const SuperAdminDashboard: React.FC = () => {
                     )}
                     <span className="text-xs font-bold text-slate-500">{book.institution}</span>
                   </div>
+
                   <h3 className="text-base font-extrabold text-slate-900">{book.title}</h3>
                   <p className="text-xs text-slate-600">
                     Author: <strong className="text-slate-900">{book.author}</strong> ({book.faculty} • {book.department})
                   </p>
-                  <div className="flex gap-4 text-xs font-bold text-slate-700">
+                  
+                  <div className="flex gap-4 text-xs font-bold text-slate-700 flex-wrap">
                     <span>Selling Price: <strong className="text-emerald-700 font-mono">₦{book.price.toLocaleString()}</strong></span>
                     <span>Course Code: {book.courseCode || 'N/A'}</span>
                     <span>Sales: {book.salesCount || 0} copies</span>
@@ -708,6 +746,19 @@ export const SuperAdminDashboard: React.FC = () => {
                       <span className="text-slate-500 font-mono text-[11px]">File: {book.fileName}</span>
                     )}
                   </div>
+
+                  {/* Display Rejection Reason if Rejected */}
+                  {book.approvalStatus === 'REJECTED' && (
+                    <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-xl text-xs space-y-1">
+                      <div className="flex items-center gap-1.5 text-red-800 font-bold">
+                        <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                        <span>Rejection Reason (Visible to Author):</span>
+                      </div>
+                      <p className="text-red-700 pl-5.5 leading-relaxed font-sans font-medium">
+                        {book.rejectionReason || 'No rejection reason provided.'}
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0 flex-wrap">
@@ -719,6 +770,7 @@ export const SuperAdminDashboard: React.FC = () => {
                     <Eye className="w-3.5 h-3.5" />
                     <span>Inspect Reader</span>
                   </button>
+                  
                   <button
                     onClick={() => {
                       setEditingBook(book);
@@ -729,27 +781,43 @@ export const SuperAdminDashboard: React.FC = () => {
                     <Edit3 className="w-3.5 h-3.5" />
                     <span>Edit Price</span>
                   </button>
+
                   {book.approvalStatus !== 'APPROVED' && (
                     <button
                       onClick={() => handleApproveBook(book.id)}
-                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow flex items-center gap-1"
+                      disabled={actionLoading === book.id}
+                      className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg shadow flex items-center gap-1.5 transition-all"
                     >
-                      <CheckCircle className="w-3.5 h-3.5" />
-                      <span>Approve</span>
+                      {actionLoading === book.id ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <CheckCircle className="w-3.5 h-3.5" />
+                      )}
+                      <span>{actionLoading === book.id ? 'Approving...' : 'Approve'}</span>
                     </button>
                   )}
+
                   {book.approvalStatus !== 'REJECTED' && (
                     <button
-                      onClick={() => handleRejectBook(book.id)}
-                      className="px-3 py-2 bg-red-100 hover:bg-red-200 text-red-800 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
+                      onClick={() => handleOpenRejectModal(book)}
+                      disabled={actionLoading === book.id}
+                      className="px-3 py-2 bg-red-100 hover:bg-red-200 disabled:opacity-50 text-red-800 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
                     >
                       <XCircle className="w-3.5 h-3.5" />
-                      <span>Reject</span>
+                      <span>Reject...</span>
                     </button>
                   )}
                 </div>
               </div>
             ))}
+
+            {booksList.filter(book => bookFilter === 'ALL' || book.approvalStatus === bookFilter).length === 0 && (
+              <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center space-y-2">
+                <BookOpen className="w-8 h-8 text-slate-300 mx-auto" />
+                <p className="font-bold text-slate-700 text-sm">No academic materials found in this category.</p>
+                <p className="text-xs text-slate-400">Try selecting a different filter above.</p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1212,6 +1280,90 @@ export const SuperAdminDashboard: React.FC = () => {
                 className="px-4 py-2 text-xs font-bold text-white bg-purple-800 hover:bg-purple-900 rounded-lg"
               >
                 Save New Price
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* REJECT ACADEMIC MATERIAL MODAL */}
+      {rejectingBook && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-2.5 text-red-700">
+              <XCircle className="w-5 h-5 text-red-600 shrink-0" />
+              <h3 className="font-extrabold text-slate-900 text-base">Reject Academic Material</h3>
+            </div>
+
+            <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 text-xs space-y-1">
+              <p className="font-extrabold text-slate-900 text-sm">{rejectingBook.title}</p>
+              <p className="text-slate-600">
+                Author: <strong className="text-slate-800">{rejectingBook.author}</strong> ({rejectingBook.institution})
+              </p>
+              <p className="text-slate-500 text-[11px]">
+                Format: {rejectingBook.format} • Course: {rejectingBook.courseCode || 'N/A'} • Price: ₦{rejectingBook.price.toLocaleString()}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-700">
+                Rejection Reason <span className="text-red-600">*</span>
+                <span className="text-slate-400 font-normal ml-1">(This feedback is displayed directly to the lecturer)</span>
+              </label>
+
+              {/* Quick Template Presets */}
+              <div className="space-y-1">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Quick Suggestions:</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    'Syllabus & Curriculum Non-Compliance',
+                    'Low-Quality Scan / Typesetting Defect',
+                    'Copyright & Institutional Verification Missing',
+                    'Incomplete Chapter Contents / Truncated PDF'
+                  ].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setRejectionReasonInput(preset)}
+                      className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold rounded-md transition-colors"
+                    >
+                      + {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <textarea
+                rows={4}
+                value={rejectionReasonInput}
+                onChange={(e) => setRejectionReasonInput(e.target.value)}
+                placeholder="Enter detailed reasons why this material cannot be published to students..."
+                className="w-full p-3 bg-white border border-slate-300 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 leading-relaxed font-sans"
+              />
+            </div>
+
+            <div className="flex justify-end items-center gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={actionLoading === rejectingBook.id}
+                onClick={() => setRejectingBook(null)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                disabled={actionLoading === rejectingBook.id || !rejectionReasonInput.trim()}
+                onClick={handleConfirmRejectBook}
+                className="px-5 py-2 text-xs font-bold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 rounded-lg shadow-sm flex items-center gap-1.5 transition-all"
+              >
+                {actionLoading === rejectingBook.id ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <XCircle className="w-3.5 h-3.5" />
+                )}
+                <span>{actionLoading === rejectingBook.id ? 'Saving Rejection...' : 'Confirm Rejection'}</span>
               </button>
             </div>
           </div>

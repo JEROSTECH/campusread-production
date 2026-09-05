@@ -182,7 +182,7 @@ service cloud.firestore {
           (isLecturer() && incoming().authorUid == request.auth.uid && incoming().approvalStatus == 'PENDING')
         );
 
-      // Update: Super Admin or Book Author (Author cannot change approvalStatus)
+      // Update: Super Admin or Book Author (Author cannot directly approve; can resubmit REJECTED to PENDING)
       allow update: if isValidId(bookId) &&
         isValidBook(incoming()) &&
         (
@@ -191,7 +191,10 @@ service cloud.firestore {
             isSignedIn() && 
             existing().authorUid == request.auth.uid && 
             incoming().authorUid == existing().authorUid &&
-            incoming().approvalStatus == existing().approvalStatus
+            (
+              incoming().approvalStatus == existing().approvalStatus ||
+              (existing().approvalStatus == 'REJECTED' && incoming().approvalStatus == 'PENDING')
+            )
           )
         );
 

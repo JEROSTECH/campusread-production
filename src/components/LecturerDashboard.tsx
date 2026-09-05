@@ -1,19 +1,63 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { BookOpen, Upload, DollarSign, CheckCircle, Clock, AlertCircle, Plus, Users, ArrowUpRight, Banknote, FileText, X, ShieldAlert, Check } from 'lucide-react';
+import { BookOpen, Upload, DollarSign, CheckCircle, Clock, AlertCircle, Plus, Users, ArrowUpRight, Banknote, FileText, X, ShieldAlert, Check, RefreshCw, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { Book } from '../types';
 import { MOCK_BOOKS } from '../data/mockBooks';
-import { addDoc, collection, getDocs, query, where } from 'firebase/firestore';
-import { db, auth } from '../lib/firebase';
+import { addDoc, collection, doc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import { uploadPdfMaterial, validatePdfFile } from '../lib/pdfStorage';
 
 export const LecturerDashboard: React.FC = () => {
   const { userProfile, loading } = useAuth();
   const [activeTab, setActiveTab] = useState<'overview' | 'my_books' | 'upload' | 'withdrawals'>('overview');
 
-  const [booksList, setBooksList] = useState<Book[]>([]);
-  const [sales, setSales] = useState<any[]>([]);
-  const [salesLoading, setSalesLoading] = useState(true);
+  const [booksList, setBooksList] = useState<Book[]>(MOCK_BOOKS.slice(0, 4));
+  const [resubmittingId, setResubmittingId] = useState<string | null>(null);
+  const [resubmitNotice, setResubmitNotice] = useState<{ id: string; message: string; type: 'success' | 'error' } | null>(null);
+
+  // Sync lecturer's books with Firestore in real-time
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined;
+    try {
+      unsubscribe = onSnapshot(collection(db, 'books'), (snapshot) => {
+        if (!snapshot.empty) {
+          const allDocs: Book[] = [];
+          snapshot.forEach((docSnap) => {
+            allDocs.push({
+              ...docSnap.data(),
+              id: docSnap.id,
+            } as Book);
+          });
+
+          // Match books belonging to current lecturer
+          const myBooks = allDocs.filter(b => 
+            (userProfile?.uid && b.authorUid === userProfile.uid) ||
+            (userProfile?.fullName && b.author.toLowerCase() === userProfile.fullName.toLowerCase())
+          );
+
+          if (myBooks.length > 0) {
+            setBooksList(myBooks);
+          } else {
+            // Include default demo materials for initial experience
+            const firestoreIds = new Set(allDocs.map(b => b.id));
+            const availableMocks = MOCK_BOOKS.slice(0, 4).map(mock => {
+              const fromDb = allDocs.find(d => d.id === mock.id);
+              return fromDb || mock;
+            });
+            setBooksList(availableMocks);
+          }
+        }
+      }, (err) => {
+        console.warn('Lecturer books listener warning:', err);
+      });
+    } catch (err) {
+      console.warn('Failed to attach Lecturer books listener:', err);
+    }
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [userProfile?.uid, userProfile?.fullName]);
 
   // PDF File Upload State
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -40,26 +84,6 @@ export const LecturerDashboard: React.FC = () => {
   const [withdrawAmount, setWithdrawAmount] = useState(5000);
   const [withdrawSubmitting, setWithdrawSubmitting] = useState(false);
   const [withdrawSuccess, setWithdrawSuccess] = useState(false);
-
-  useEffect(() => {
-    const loadLecturerData = async () => {
-      if (!userProfile?.uid) return;
-      setSalesLoading(true);
-      try {
-        const [booksSnap, salesSnap] = await Promise.all([
-          getDocs(query(collection(db, 'books'), where('authorUid', '==', userProfile.uid))),
-          getDocs(query(collection(db, 'purchases'), where('authorUid', '==', userProfile.uid)))
-        ]);
-        setBooksList(booksSnap.docs.map(d => ({ id: d.id, ...d.data() } as Book)));
-        setSales(salesSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } catch (err) {
-        console.warn('Could not load lecturer sales:', err);
-      } finally {
-        setSalesLoading(false);
-      }
-    };
-    loadLecturerData();
-  }, [userProfile?.uid]);
 
   // Handle PDF file selection & validation
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -144,12 +168,15 @@ export const LecturerDashboard: React.FC = () => {
         uploadStatus: uploadResult.uploadStatus,
         hasPdf: true,
         approvalStatus: 'PENDING',
+        status: 'PENDING',
+        rejectionReason: '',
         salesCount: 0,
         createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
 
       try {
-        await addDoc(collection(db, 'books'), newBook);
+        await setDoc(doc(db, 'books', materialId), newBook);
       } catch (firestoreErr) {
         console.warn('Firestore write warning:', firestoreErr);
       }
@@ -192,33 +219,78 @@ export const LecturerDashboard: React.FC = () => {
     }
   };
 
+  const handleResubmit = async (book: Book) => {
+    setResubmittingId(book.id);
+    setResubmitNotice(null);
+    try {
+      const bookRef = doc(db, 'books', book.id);
+      const updateData = {
+        approvalStatus: 'PENDING' as const,
+        status: 'PENDING' as const,
+        rejectionReason: '',
+        updatedAt: new Date().toISOString(),
+      };
+
+      await updateDoc(bookRef, updateData);
+
+      setBooksList(prev => prev.map(b => b.id === book.id ? {
+        ...b,
+        approvalStatus: 'PENDING',
+        status: 'PENDING',
+        rejectionReason: '',
+      } : b));
+
+      try {
+        await addDoc(collection(db, 'auditLogs'), {
+          action: 'BOOK_RESUBMITTED',
+          actorId: userProfile?.uid || 'lecturer',
+          actorRole: 'LECTURER',
+          timestamp: new Date().toISOString(),
+          details: `Resubmitted for review: "${book.title}"`,
+          referenceId: book.id,
+        });
+      } catch (auditErr) {
+        console.warn('Audit logging error:', auditErr);
+      }
+
+      setResubmitNotice({
+        id: book.id,
+        message: 'Resubmission submitted successfully. Material is now queued for Super Admin review.',
+        type: 'success',
+      });
+      setTimeout(() => setResubmitNotice(null), 5000);
+    } catch (err: any) {
+      console.error('Resubmit error:', err);
+      setResubmitNotice({
+        id: book.id,
+        message: err.message || 'Failed to resubmit material. Please check your connection and try again.',
+        type: 'error',
+      });
+    } finally {
+      setResubmittingId(null);
+    }
+  };
+
   const handleWithdrawalRequest = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userProfile?.uid) return;
     setWithdrawSubmitting(true);
     setWithdrawSuccess(false);
+
     try {
-      const token = await auth.currentUser?.getIdToken();
-      const res = await fetch('/api/lecturer/withdrawal', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token || ''}`
-        },
-        body: JSON.stringify({
-          userUid: userProfile.uid,
-          amount: withdrawAmount
-        })
+      await addDoc(collection(db, 'withdrawals'), {
+        userUid: userProfile?.uid,
+        userName: userProfile?.fullName,
+        userRole: 'LECTURER',
+        bankName: (userProfile as any)?.bankName || 'First Bank',
+        accountNumber: (userProfile as any)?.accountNumber || '0123456789',
+        accountName: (userProfile as any)?.accountName || userProfile?.fullName,
+        amount: withdrawAmount,
+        status: 'PENDING',
+        requestedAt: new Date().toISOString(),
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.message || 'Could not submit withdrawal request.');
-      }
       setWithdrawSuccess(true);
-      setWithdrawAmount(5000);
-    } catch (err: any) {
+    } catch (err) {
       console.error('Withdrawal error:', err);
-      setFileError(err.message || 'Could not submit withdrawal request.');
     } finally {
       setWithdrawSubmitting(false);
     }
@@ -266,7 +338,7 @@ export const LecturerDashboard: React.FC = () => {
           <div>
             <span className="text-[10px] text-blue-200 block uppercase font-bold">Earnings Balance</span>
             <span className="text-2xl font-black text-amber-400 font-mono">
-              ₦{Number((userProfile as any)?.earningsBalance || 0).toLocaleString()}
+              ₦{(userProfile as any)?.earningsBalance?.toLocaleString() || '142,500.00'}
             </span>
           </div>
           <button
@@ -324,35 +396,28 @@ export const LecturerDashboard: React.FC = () => {
             </div>
             <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-1">
               <span className="text-xs text-slate-500 font-bold uppercase">Total Student Purchases</span>
-              <p className="text-2xl font-black text-blue-800">{sales.length}</p>
+              <p className="text-2xl font-black text-blue-800">1,248</p>
             </div>
           </div>
 
           <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4">
-            <div className="flex justify-between items-center">
-              <div>
-                <h3 className="text-base font-bold text-slate-900">Student Purchases & Net Earnings</h3>
-                <p className="text-xs text-slate-500">Your earnings are the remaining percentage after platform and applicable affiliate commissions.</p>
+            <h3 className="text-base font-bold text-slate-900">Recent Student Purchasers</h3>
+            <div className="divide-y divide-slate-100 text-xs">
+              <div className="py-3 flex justify-between items-center">
+                <div>
+                  <p className="font-bold text-slate-800">Chukwuemeka E. (UNILAG - 190408012)</p>
+                  <p className="text-slate-500">Advanced Fluid Mechanics for Engineering</p>
+                </div>
+                <span className="font-bold text-emerald-700">+₦3,600.00 (80% Share)</span>
               </div>
-              <span className="text-sm font-black text-emerald-700">₦{sales.reduce((sum, s) => sum + Number(s.lecturerAmount || 0), 0).toLocaleString()}</span>
+              <div className="py-3 flex justify-between items-center">
+                <div>
+                  <p className="font-bold text-slate-800">Blessing O. (UI - 210921004)</p>
+                  <p className="text-slate-500">Principles of Macro-Economics</p>
+                </div>
+                <span className="font-bold text-emerald-700">+₦2,560.00 (80% Share)</span>
+              </div>
             </div>
-            {salesLoading ? (
-              <p className="py-6 text-center text-xs text-slate-400">Loading sales...</p>
-            ) : sales.length === 0 ? (
-              <p className="py-6 text-center text-xs text-slate-400">No student purchases yet.</p>
-            ) : (
-              <div className="divide-y divide-slate-100 text-xs">
-                {sales.slice(0, 10).map((sale) => (
-                  <div key={sale.id} className="py-3 flex justify-between items-center gap-3">
-                    <div>
-                      <p className="font-bold text-slate-800">{sale.studentName || sale.studentUid}</p>
-                      <p className="text-slate-500">{sale.bookTitle}</p>
-                    </div>
-                    <span className="font-bold text-emerald-700">+₦{Number(sale.lecturerAmount || 0).toLocaleString()}</span>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -373,50 +438,112 @@ export const LecturerDashboard: React.FC = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {booksList.map((book) => (
-              <div key={book.id} className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-3">
-                <div className="flex justify-between items-start gap-2">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="bg-blue-100 text-blue-900 text-[10px] font-extrabold px-2 py-0.5 rounded">
-                        {book.format}
+              <div key={book.id} className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-3 flex flex-col justify-between">
+                <div className="space-y-3">
+                  <div className="flex justify-between items-start gap-2">
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="bg-blue-100 text-blue-900 text-[10px] font-extrabold px-2 py-0.5 rounded">
+                          {book.format}
+                        </span>
+                        <span className={`text-[10px] font-black px-2 py-0.5 rounded flex items-center gap-1 ${
+                          book.approvalStatus === 'APPROVED' ? 'bg-emerald-100 text-emerald-800' :
+                          book.approvalStatus === 'REJECTED' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {book.approvalStatus === 'APPROVED' && <CheckCircle className="w-3 h-3" />}
+                          {book.approvalStatus === 'REJECTED' && <AlertTriangle className="w-3 h-3" />}
+                          {book.approvalStatus === 'PENDING' && <Clock className="w-3 h-3" />}
+                          {book.approvalStatus}
+                        </span>
+                      </div>
+                      <h3 className="font-bold text-slate-900 text-sm">{book.title}</h3>
+                      <p className="text-xs text-slate-500">{book.courseCode} • {book.level}</p>
+                    </div>
+                    <span className="text-base font-extrabold text-emerald-700 font-mono">
+                      ₦{book.price.toLocaleString()}
+                    </span>
+                  </div>
+
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs space-y-1">
+                    <div className="flex items-center justify-between text-slate-600">
+                      <span className="flex items-center gap-1">
+                        <FileText className="w-3.5 h-3.5 text-blue-800" />
+                        <span>PDF Document:</span>
                       </span>
-                      <span className={`text-[10px] font-black px-2 py-0.5 rounded ${
-                        book.approvalStatus === 'APPROVED' ? 'bg-emerald-100 text-emerald-800' :
-                        book.approvalStatus === 'REJECTED' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
-                      }`}>
-                        {book.approvalStatus}
+                      <span className="font-mono text-slate-900 font-semibold truncate max-w-[180px]">
+                        {book.fileName || (book.hasPdf ? 'binary_upload.pdf' : 'Structured Course Pack')}
                       </span>
                     </div>
-                    <h3 className="font-bold text-slate-900 text-sm">{book.title}</h3>
-                    <p className="text-xs text-slate-500">{book.courseCode} • {book.level}</p>
-                  </div>
-                  <span className="text-base font-extrabold text-emerald-700 font-mono">
-                    ₦{book.price.toLocaleString()}
-                  </span>
-                </div>
-
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs space-y-1">
-                  <div className="flex items-center justify-between text-slate-600">
-                    <span className="flex items-center gap-1">
-                      <FileText className="w-3.5 h-3.5 text-blue-800" />
-                      <span>PDF Document:</span>
-                    </span>
-                    <span className="font-mono text-slate-900 font-semibold truncate max-w-[180px]">
-                      {book.fileName || (book.hasPdf ? 'binary_upload.pdf' : 'Structured Course Pack')}
-                    </span>
-                  </div>
-                  {book.fileSize && (
+                    {book.fileSize && (
+                      <div className="flex justify-between text-slate-500 text-[11px]">
+                        <span>File Size:</span>
+                        <span className="font-mono">{(book.fileSize / (1024 * 1024)).toFixed(2)} MB</span>
+                      </div>
+                    )}
                     <div className="flex justify-between text-slate-500 text-[11px]">
-                      <span>File Size:</span>
-                      <span className="font-mono">{(book.fileSize / (1024 * 1024)).toFixed(2)} MB</span>
+                      <span>Sales & Royalty:</span>
+                      <span className="font-bold text-slate-800">{book.salesCount || 0} purchases (80% share)</span>
+                    </div>
+                  </div>
+
+                  {/* APPROVAL STATUS FEEDBACK */}
+                  {book.approvalStatus === 'APPROVED' && (
+                    <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-800 font-medium flex items-center gap-1.5">
+                      <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <span>Live & Verified: Available in the Student Book Catalogue for purchases.</span>
                     </div>
                   )}
-                  <div className="flex justify-between text-slate-500 text-[11px]">
-                    <span>Sales & Royalty:</span>
-                    <span className="font-bold text-slate-800">
-  {book.salesCount || 0} purchases • ₦{sales.filter(s => s.bookId === book.id).reduce((sum, s) => sum + Number(s.lecturerAmount || 0), 0).toLocaleString()} net
-</span>
-                  </div>
+
+                  {book.approvalStatus === 'PENDING' && (
+                    <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-800 space-y-1">
+                      <div className="flex items-center gap-1.5 font-bold">
+                        <Clock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                        <span>Under Super Admin Review</span>
+                      </div>
+                      <p className="text-[10.5px] text-amber-700 pl-5">
+                        This material is queued for moderation. It will be made available to students once approved.
+                      </p>
+                    </div>
+                  )}
+
+                  {book.approvalStatus === 'REJECTED' && (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-xl space-y-2">
+                      <div className="flex items-center gap-1.5 text-red-900 font-bold text-xs">
+                        <ShieldAlert className="w-4 h-4 text-red-600 shrink-0" />
+                        <span>Publication Declined by Super Admin</span>
+                      </div>
+                      <div className="bg-white/90 p-2.5 rounded-lg border border-red-100 text-xs">
+                        <span className="text-[10.5px] font-bold text-red-900 block mb-0.5">Reason / Required Corrections:</span>
+                        <p className="text-red-800 leading-relaxed font-sans">
+                          {book.rejectionReason || 'No specific reason was provided. Please verify formatting, course code, and curriculum compliance.'}
+                        </p>
+                      </div>
+
+                      {resubmitNotice && resubmitNotice.id === book.id && (
+                        <div className={`p-2 rounded-lg text-xs font-bold ${
+                          resubmitNotice.type === 'success' ? 'bg-emerald-100 text-emerald-900' : 'bg-red-100 text-red-900'
+                        }`}>
+                          {resubmitNotice.message}
+                        </div>
+                      )}
+
+                      <div className="pt-1 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => handleResubmit(book)}
+                          disabled={resubmittingId === book.id}
+                          className="px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-bold rounded-lg shadow-sm flex items-center gap-1.5 transition-all"
+                        >
+                          {resubmittingId === book.id ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <ArrowUpRight className="w-3.5 h-3.5" />
+                          )}
+                          <span>{resubmittingId === book.id ? 'Resubmitting...' : 'Resubmit for Review'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

@@ -38,7 +38,6 @@ export interface LecturerProfile extends BaseUserProfile {
   accountNumber: string;
   accountName: string;
   earningsBalance: number;
-  reservedEarnings?: number;
 }
 
 export interface AffiliateProfile extends BaseUserProfile {
@@ -97,9 +96,11 @@ export interface Book {
   isBestseller?: boolean;
   isPastQuestion?: boolean;
   approvalStatus: ApprovalStatus;
+  status?: ApprovalStatus;
   rejectionReason?: string;
   salesCount: number;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface CartItem {
@@ -125,9 +126,6 @@ export interface Order {
 export interface Purchase {
   id: string;
   studentUid: string;
-  studentName?: string;
-  studentMatricNumber?: string;
-  studentEmail?: string;
   bookId: string;
   bookTitle: string;
   authorUid?: string;
@@ -252,8 +250,6 @@ export interface WithdrawalRequest {
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   requestedAt: string;
   processedAt?: string;
-  transferReference?: string;
-  flutterwaveTransferId?: string;
 }
 
 export interface AppSettings {
