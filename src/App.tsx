@@ -18,7 +18,14 @@ import { SuperAdminDashboard } from './components/SuperAdminDashboard';
 import { Footer } from './components/Footer';
 import { Filter, BookOpen } from 'lucide-react';
 import { useAuth } from './context/AuthContext';
-import { doc, getDoc } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  query,
+  where,
+} from 'firebase/firestore';
 import { db } from './lib/firebase';
 
 export default function App() {
@@ -26,6 +33,7 @@ export default function App() {
 
   const [currentView, setCurrentView] = useState<string>('HOME');
   const [books, setBooks] = useState<Book[]>(MOCK_BOOKS);
+  const [booksLoading, setBooksLoading] = useState(true);
   const [selectedTab, setSelectedTab] = useState<ActiveTab>('all');
   const [selectedInstitution, setSelectedInstitution] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -94,7 +102,51 @@ export default function App() {
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+useEffect(() => {
+  const approvedBooksQuery = query(
+    collection(db, 'books'),
+    where('approvalStatus', '==', 'APPROVED')
+  );
 
+  const unsubscribe = onSnapshot(
+    approvedBooksQuery,
+    (snapshot) => {
+      const approvedFirestoreBooks: Book[] = snapshot.docs.map((bookDoc) => ({
+        ...bookDoc.data(),
+        id: bookDoc.id,
+      } as Book));
+
+      // Prevent duplicate books when a Firestore book has
+      // the same ID as one of the demo/mock books.
+      const firestoreIds = new Set(
+        approvedFirestoreBooks.map((book) => book.id)
+      );
+
+      const remainingMockBooks = MOCK_BOOKS.filter(
+        (mockBook) => !firestoreIds.has(mockBook.id)
+      );
+
+      // Approved Firestore books appear first.
+      // Existing mock books remain available as demo content.
+      setBooks([
+        ...approvedFirestoreBooks,
+        ...remainingMockBooks,
+      ]);
+
+      setBooksLoading(false);
+    },
+    (error) => {
+      console.error('Student catalogue Firestore error:', error);
+
+      // Keep the existing catalogue available if Firestore
+      // temporarily fails.
+      setBooks(MOCK_BOOKS);
+      setBooksLoading(false);
+    }
+  );
+
+  return () => unsubscribe();
+}, []);
   // Fetch dynamic website settings from Firestore
   useEffect(() => {
     async function loadSettings() {
@@ -320,7 +372,14 @@ export default function App() {
               </div>
 
               {/* Book Grid */}
-              {filteredBooks.length === 0 ? (
+              {booksLoading ? (
+  <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+    <div className="w-10 h-10 border-4 border-slate-200 border-t-blue-900 rounded-full animate-spin mx-auto mb-4" />
+    <p className="text-sm font-semibold text-slate-600">
+      Loading approved academic materials...
+    </p>
+  </div>
+) : filteredBooks.length === 0 ? (
                 <div className="bg-white rounded-xl border border-slate-200 p-12 text-center space-y-3">
                   <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 mx-auto flex items-center justify-center">
                     <BookOpen className="w-6 h-6" />

@@ -3,7 +3,16 @@ import { BookOpen, Upload, DollarSign, CheckCircle, Clock, AlertCircle, Plus, Us
 import { useAuth } from '../context/AuthContext';
 import { Book } from '../types';
 import { MOCK_BOOKS } from '../data/mockBooks';
-import { addDoc, collection, doc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+import {
+  addDoc,
+  collection,
+  doc,
+  setDoc,
+  updateDoc,
+  onSnapshot,
+  query,
+  where,
+} from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { uploadPdfMaterial, validatePdfFile } from '../lib/pdfStorage';
 
@@ -17,48 +26,44 @@ export const LecturerDashboard: React.FC = () => {
 
   // Sync lecturer's books with Firestore in real-time
   useEffect(() => {
-    let unsubscribe: (() => void) | undefined;
-    try {
-      unsubscribe = onSnapshot(collection(db, 'books'), (snapshot) => {
-        if (!snapshot.empty) {
-          const allDocs: Book[] = [];
-          snapshot.forEach((docSnap) => {
-            allDocs.push({
-              ...docSnap.data(),
-              id: docSnap.id,
-            } as Book);
-          });
+  // A lecturer must have a Firebase UID before loading their books.
+  if (!userProfile?.uid) {
+    setBooksList([]);
+    return;
+  }
 
-          // Match books belonging to current lecturer
-          const myBooks = allDocs.filter(b => 
-            (userProfile?.uid && b.authorUid === userProfile.uid) ||
-            (userProfile?.fullName && b.author.toLowerCase() === userProfile.fullName.toLowerCase())
-          );
+  let unsubscribe: (() => void) | undefined;
 
-          if (myBooks.length > 0) {
-            setBooksList(myBooks);
-          } else {
-            // Include default demo materials for initial experience
-            const firestoreIds = new Set(allDocs.map(b => b.id));
-            const availableMocks = MOCK_BOOKS.slice(0, 4).map(mock => {
-              const fromDb = allDocs.find(d => d.id === mock.id);
-              return fromDb || mock;
-            });
-            setBooksList(availableMocks);
-          }
-        }
-      }, (err) => {
-        console.warn('Lecturer books listener warning:', err);
-      });
-    } catch (err) {
-      console.warn('Failed to attach Lecturer books listener:', err);
-    }
+  try {
+    const lecturerBooksQuery = query(
+      collection(db, 'books'),
+      where('authorUid', '==', userProfile.uid)
+    );
 
-    return () => {
-      if (unsubscribe) unsubscribe();
-    };
-  }, [userProfile?.uid, userProfile?.fullName]);
+    unsubscribe = onSnapshot(
+      lecturerBooksQuery,
+      (snapshot) => {
+        const myBooks: Book[] = snapshot.docs.map((docSnap) => ({
+          ...docSnap.data(),
+          id: docSnap.id,
+        } as Book));
 
+        setBooksList(myBooks);
+      },
+      (err) => {
+        console.error('Lecturer books listener error:', err);
+        setBooksList([]);
+      }
+    );
+  } catch (err) {
+    console.error('Failed to attach Lecturer books listener:', err);
+    setBooksList([]);
+  }
+
+  return () => {
+    if (unsubscribe) unsubscribe();
+  };
+}, [userProfile?.uid]);
   // PDF File Upload State
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
