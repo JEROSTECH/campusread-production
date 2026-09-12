@@ -350,7 +350,8 @@ function toFirestoreFields(
 
 async function fetchFirestoreDocument(
   collection: string,
-  docId: string
+  docId: string,
+  authToken?: string
 ): Promise<Record<string, any> | null> {
   try {
     const url =
@@ -359,7 +360,15 @@ async function fetchFirestoreDocument(
       `${collection}/${encodeURIComponent(docId)}` +
       `?key=${FIREBASE_API_KEY}`;
 
-    const response = await fetch(url);
+   const response = await fetch(url, {
+  headers: authToken
+    ? {
+        Authorization: authToken.startsWith("Bearer ")
+          ? authToken
+          : `Bearer ${authToken}`,
+      }
+    : undefined,
+});
 
     if (!response.ok) {
       return null;
@@ -676,18 +685,25 @@ app.post(
       );
 
       const userRole = String(
-        userDoc?.role || "STUDENT"
-      ).toUpperCase();
+        userDoc?.role ||
+        userDoc?.accountType ||
+        userDoc?.userRole ||
+        "STUDENT"
+      ).trim().toUpperCase();
 
-      if (
-        userRole !== "LECTURER" &&
-        userRole !== "SUPER_ADMIN" &&
-        userRole !== "ADMIN"
-      ) {
+      const allowedRoles = ["LECTURER", "SUPER_ADMIN", "ADMIN"];
+
+      if (!allowedRoles.includes(userRole)) {
+        console.log("UPLOAD BLOCKED", {
+          uid: authenticatedUid,
+          role: userDoc?.role,
+          accountType: userDoc?.accountType,
+          userRole: userDoc?.userRole
+        });
+
         return res.status(403).json({
           success: false,
-          message:
-            "Forbidden: Only lecturers or platform administrators can upload academic materials.",
+          message: `Forbidden. Detected role: ${userRole}`,
         });
       }
 
