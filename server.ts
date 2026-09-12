@@ -681,7 +681,8 @@ app.post(
 
       const userDoc = await fetchFirestoreDocument(
         "users",
-        authenticatedUid
+        authenticatedUid,
+        authHeader
       );
 
       const userRole = String(
