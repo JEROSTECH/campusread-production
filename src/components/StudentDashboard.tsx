@@ -39,7 +39,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   onOpenReader,
   onNavigateToBookstore,
 }) => {
-  const { userProfile, loading, refreshUserProfile } = useAuth();
+  const { userProfile, currentUser, loading, refreshUserProfile } = useAuth();
 
   const [purchasedBooks, setPurchasedBooks] = useState<Book[]>(
     MOCK_BOOKS.slice(0, 3)
@@ -538,9 +538,10 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
           headers: {
             'Content-Type':
-              'application/json'
+              'application/json',
+            Authorization:
+              `Bearer ${await currentUser?.getIdToken()}`
           },
-
           body: JSON.stringify({
             transactionId:
               cleanTransactionId,
