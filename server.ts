@@ -170,6 +170,12 @@ async function verifyFirebaseIdToken(
     );
 
     if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+
+      console.error(
+        `[Firebase Auth] accounts:lookup failed HTTP ${response.status}: ${errorText}`
+      );
+
       return null;
     }
 
@@ -4864,3 +4870,4 @@ async function startServer() {
 }
 
 startServer();
+
