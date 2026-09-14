@@ -481,7 +481,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({ book, purchaseRef = 'C
         </div>
 
         {/* Content Render Canvas */}
-        <div className="flex-1 overflow-auto p-2 lg:p-6 flex items-start justify-center">
+        <div className="flex-1 overflow-auto p-2 lg:p-6 flex items-start justify-start">
           {loading ? (
             <div className="flex flex-col items-center justify-center p-12 space-y-3">
               <Loader2 className="w-8 h-8 text-blue-700 animate-spin" />
