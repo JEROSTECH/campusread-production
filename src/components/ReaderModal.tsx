@@ -386,7 +386,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({ book, purchaseRef = 'C
           {/* Zoom controls */}
           <div className="flex items-center bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 text-xs">
             <button
-              onClick={() => setZoomLevel(z => Math.max(z - 15, 60))}
+              onClick={() => setZoomLevel(z => Math.max(z - 15, 40))}
               className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200"
               title="Zoom Out"
             >
