@@ -254,6 +254,42 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({ book, purchaseRef = 'C
       setIsFullscreen(false);
     }
   };
+// Mobile/tablet pinch-to-zoom support
+  const pinchStartDistanceRef = useRef<number | null>(null);
+  const pinchStartZoomRef = useRef(zoomLevel);
+
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+
+      pinchStartDistanceRef.current = Math.hypot(dx, dy);
+      pinchStartZoomRef.current = zoomLevel;
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length !== 2 || pinchStartDistanceRef.current === null) {
+      return;
+    }
+
+    e.preventDefault();
+
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    const distance = Math.hypot(dx, dy);
+
+    const scale = distance / pinchStartDistanceRef.current;
+    const nextZoom = Math.round(
+      Math.min(300, Math.max(60, pinchStartZoomRef.current * scale))
+    );
+
+    setZoomLevel(nextZoom);
+  };
+
+  const handleTouchEnd = () => {
+    pinchStartDistanceRef.current = null;
+  };
 
   // Dynamic watermark text string (Student Name • Matriculation Number • Email • Timestamp • DRM Reference)
   const studentName = userProfile?.fullName || 'Verified Reader';
@@ -261,7 +297,6 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({ book, purchaseRef = 'C
   const matricNumber = (userProfile as any)?.matricNumber || 'CAMPUS-VERIFIED';
   const timestamp = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
   const watermarkText = `${studentName} • ${matricNumber} • ${studentEmail} • ${timestamp} • DRM REF: ${purchaseRef}`;
-
   // Theme container styling
   const themeStyles = {
     light: 'bg-slate-100 text-slate-900',
@@ -273,6 +308,9 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({ book, purchaseRef = 'C
     <div
       ref={readerContainerRef}
       className={`fixed inset-0 z-50 flex flex-col ${themeStyles[themeMode]} select-none`}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
       onContextMenu={(e) => e.preventDefault()}
       onCopy={(e) => e.preventDefault()}
       onCut={(e) => e.preventDefault()}
@@ -348,7 +386,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({ book, purchaseRef = 'C
           {/* Zoom controls */}
           <div className="flex items-center bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 text-xs">
             <button
-              onClick={() => setZoomLevel(z => Math.max(z - 15, 75))}
+              onClick={() => setZoomLevel(z => Math.max(z - 15, 60))}
               className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200"
               title="Zoom Out"
             >
@@ -356,7 +394,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({ book, purchaseRef = 'C
             </button>
             <span className="px-1.5 font-mono font-bold text-[11px] text-slate-700 dark:text-slate-200">{zoomLevel}%</span>
             <button
-              onClick={() => setZoomLevel(z => Math.min(z + 15, 200))}
+              onClick={() => setZoomLevel(z => Math.min(z + 15, 300))}
               className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200"
               title="Zoom In"
             >
