@@ -32,12 +32,16 @@ interface StudentDashboardProps {
   onOpenBook: (book: Book) => void;
   onOpenReader: (book: Book) => void;
   onNavigateToBookstore: () => void;
+  fundingAmount?: number;
+  onWalletFundingSuccess?: () => void;
 }
 
 export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   onOpenBook,
   onOpenReader,
   onNavigateToBookstore,
+  fundingAmount,
+  onWalletFundingSuccess,
 }) => {
   const { userProfile, currentUser, loading, refreshUserProfile } = useAuth();
 
@@ -73,6 +77,16 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const [activeFlwId, setActiveFlwId] = useState('');
 
   const [fundError, setFundError] = useState<string | null>(null);
+
+  // Open wallet funding automatically when a book purchase needs more balance.
+  useEffect(() => {
+    if (!fundingAmount || fundingAmount <= 0) return;
+
+    setFundAmount(Math.max(MIN_WALLET_FUNDING, Math.ceil(fundingAmount)));
+    setFundError(null);
+    setPaymentPhase('idle');
+    setShowFundModal(true);
+  }, [fundingAmount]);
 
   const [successDetails, setSuccessDetails] = useState<{
     amount: number;
@@ -634,6 +648,10 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         userProfile.uid
       );
 
+      if (fundingAmount && onWalletFundingSuccess) {
+        onWalletFundingSuccess();
+      }
+
       console.log(
         'CampusRead wallet verification completed successfully:',
         {
@@ -791,17 +809,21 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           });
 
           setPaymentPhase('success');
-        }
-      } else {
-        setLookupMessage({
-          type: 'info',
 
-          text:
-            data?.message ||
-            'Transaction is pending or has not yet been confirmed by Flutterwave.'
-        });
+          if (fundingAmount && onWalletFundingSuccess) {
+            onWalletFundingSuccess();
+          }
+        } else {
+          setLookupMessage({
+            type: 'info',
+
+            text:
+              data?.message ||
+              'Transaction is pending or has not yet been confirmed by Flutterwave.'
+          });
+        }
       }
-    } catch (err: any) {
+     } catch (err: any) {
       console.error(
         'Payment status lookup error:',
         err

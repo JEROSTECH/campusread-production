@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Book } from '../types';
 import {
   X,
@@ -24,6 +24,9 @@ interface BookDetailModalProps {
   onAddToCart: (book: Book) => void;
   onToggleSave: (book: Book) => void;
   onOpenReader: (book: Book) => void;
+  onRequestWalletFunding?: (book: Book, amount: number) => void;
+  autoPurchase?: boolean;
+  onAutoPurchaseComplete?: () => void;
 }
 
 export const BookDetailModal: React.FC<BookDetailModalProps> = ({
@@ -33,6 +36,9 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   onAddToCart,
   onToggleSave,
   onOpenReader,
+  onRequestWalletFunding,
+  autoPurchase,
+  onAutoPurchaseComplete
 }) => {
   const { userProfile, refreshUserProfile } = useAuth();
   const [selectedLicense, setSelectedLicense] = useState<'digital' | 'bundle'>('digital');
@@ -45,6 +51,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const price = selectedLicense === 'bundle' ? book.price + 2000 : book.price;
   const studentWalletBal = Number((userProfile as any)?.walletBalance || 0);
   const isStudent = userProfile && (!userProfile.role || userProfile.role === 'STUDENT');
+  const autoPurchaseStartedRef = useRef(false);
 
   const handleWalletPurchase = async () => {
     if (!userProfile?.uid) {
@@ -53,7 +60,8 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     }
 
     if (studentWalletBal < price) {
-      setWalletError(`Insufficient wallet balance (Naira ${studentWalletBal.toLocaleString()}). Please fund your wallet in the Student Dashboard.`);
+      setWalletError(`Insufficient wallet balance (₦${studentWalletBal.toLocaleString()}). Please fund your wallet to continue.`);
+      onRequestWalletFunding?.(book, price);
       return;
     }
     setPurchasingWallet(true);
@@ -82,6 +90,10 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
 
       setWalletSuccess(true);
 
+      if (autoPurchase && onAutoPurchaseComplete) {
+      onAutoPurchaseComplete();
+      }
+
       if (refreshUserProfile) {
         await refreshUserProfile();
       }
@@ -91,6 +103,31 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       setPurchasingWallet(false);
     }
   };
+
+  useEffect(() => {
+    if (
+      !autoPurchase ||
+      autoPurchaseStartedRef.current ||
+      !isStudent ||
+      !userProfile?.uid ||
+      purchasingWallet ||
+      walletSuccess ||
+      studentWalletBal < price
+    ) {
+      return;
+    }
+
+    autoPurchaseStartedRef.current = true;
+    void handleWalletPurchase();
+  }, [
+    autoPurchase,
+    isStudent,
+    userProfile?.uid,
+    studentWalletBal,
+    price,
+    purchasingWallet,
+    walletSuccess
+  ]);
 
   const handleShare = () => {
     const materialUrl = window.location.origin + "/material/" + encodeURIComponent(book.id);
@@ -204,7 +241,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                 <div className="flex-1">
                   <div className="flex justify-between items-center font-bold text-sm text-slate-900">
                     <span>Full Digital E-Reader License</span>
-                    <span>Ã¢â€šÂ¦{book.price.toLocaleString()}</span>
+                    <span>{"\u20A6"}{book.price.toLocaleString()}</span>
                   </div>
 
                   <p className="text-xs text-slate-500 mt-0.5">
@@ -232,7 +269,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                 <div className="flex-1">
                   <div className="flex justify-between items-center font-bold text-sm text-slate-900">
                     <span>Print Course Pack + Digital Bundle</span>
-                    <span>Ã¢â€šÂ¦{(book.price + 2000).toLocaleString()}</span>
+                   <span>{"\u20A6"}{(book.price + 2000).toLocaleString()}</span>
                   </div>
 
                   <p className="text-xs text-slate-500 mt-0.5">
@@ -279,7 +316,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                         <>
                           <Wallet className="w-4 h-4" />
                           <span>
-                            1-Click Buy with Wallet (Ã¢â€šÂ¦{price.toLocaleString()})
+                           1-Click Buy with Wallet ({"\u20A6"}{price.toLocaleString()})
                           </span>
                         </>
                       )}
@@ -299,7 +336,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                     className="w-full py-3 bg-blue-700 text-white font-bold rounded-lg shadow-md hover:bg-blue-800 transition-all flex items-center justify-center gap-2 text-xs"
                   >
                     <ShoppingBag className="w-4 h-4" />
-                    Add to Cart Ã¢â‚¬â€ Ã¢â€šÂ¦{price.toLocaleString()}
+                    Add to Cart {"\u20A6"}{price.toLocaleString()}
                   </button>
 
                   <button

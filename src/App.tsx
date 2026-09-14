@@ -43,6 +43,11 @@ export default function App() {
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [savedBookIds, setSavedBookIds] = useState<string[]>(['book-1', 'book-3']);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
+  const [pendingWalletPurchase, setPendingWalletPurchase] = useState<{
+    book: Book;
+    amount: number;
+  } | null>(null);
+  const [autoPurchaseBookId, setAutoPurchaseBookId] = useState<string | null>(null);
   const [readerBook, setReaderBook] = useState<Book | null>(null);
 
   const [isCartOpen, setIsCartOpen] = useState(false);
@@ -244,6 +249,18 @@ export default function App() {
     loadSettings();
   }, []);
 
+  // Send an insufficient-wallet book purchase into the existing
+  // Student Dashboard funding flow.
+  const handleRequestWalletFunding = (book: Book, amount: number) => {
+    setPendingWalletPurchase({
+      book,
+      amount
+    });
+
+    setSelectedBook(null);
+    setCurrentView('STUDENT_DASHBOARD');
+  };
+
   // Cart operations
   const handleAddToCart = (book: Book) => {
     setCartItems((prev) => {
@@ -433,10 +450,22 @@ export default function App() {
       <main className="flex-1 w-full">
         {currentView === 'STUDENT_DASHBOARD' ? (
           <StudentDashboard
-            onOpenBook={(b) => openBook(b)}
-            onOpenReader={(b) => setReaderBook(b)}
-            onNavigateToBookstore={() => setCurrentView('BOOKSTORE')}
-          />
+  onOpenBook={(b) => openBook(b)}
+  onOpenReader={(b) => setReaderBook(b)}
+  onNavigateToBookstore={() => setCurrentView('BOOKSTORE')}
+  fundingAmount={pendingWalletPurchase?.amount}
+onWalletFundingSuccess={
+  pendingWalletPurchase
+    ? () => {
+        const pending = pendingWalletPurchase;
+        setPendingWalletPurchase(null);
+        setAutoPurchaseBookId(pending.book.id);
+        setCurrentView('HOME');
+        setSelectedBook(pending.book);
+      }
+    : undefined
+}
+/>
         ) : currentView === 'LECTURER_DASHBOARD' ? (
           <LecturerDashboard />
         ) : currentView === 'AFFILIATE_DASHBOARD' ? (
@@ -582,6 +611,9 @@ export default function App() {
             closeBook();
             setReaderBook(b);
           }}
+          onRequestWalletFunding={handleRequestWalletFunding}
+          autoPurchase={autoPurchaseBookId === selectedBook.id}
+          onAutoPurchaseComplete={() => setAutoPurchaseBookId(null)}
         />
       )}
 
