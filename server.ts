@@ -1770,7 +1770,12 @@ async function startServer() {
     // Only serve compiled frontend assets from dist/
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath, { index: false }));
-    
+    app.get("/download/campusread.apk", (_req, res) => {
+  res.download(
+    path.join(process.cwd(), "public", "download", "campusread.apk"),
+    "campusread.apk"
+  );
+});    
     // SPA Fallback: serve index.html for all non-API GET requests
     app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">CampusRead</string>
+    <string name="title_activity_main">CampusRead</string>
+    <string name="package_name">org.campusread.app</string>
+    <string name="custom_url_scheme">org.campusread.app</string>
+</resources>
