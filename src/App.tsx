@@ -38,13 +38,13 @@ export default function App() {
   const [selectedInstitution, setSelectedInstitution] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [websiteSettings, setWebsiteSettings] = useState<WebsiteSettings | undefined>(undefined);
-  
+
   // Modals & Drawers state
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [savedBookIds, setSavedBookIds] = useState<string[]>(['book-1', 'book-3']);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [readerBook, setReaderBook] = useState<Book | null>(null);
-  
+
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isSavedOnly, setIsSavedOnly] = useState(false);
   const [isLecturerPortalOpen, setIsLecturerPortalOpen] = useState(false);
@@ -58,15 +58,55 @@ export default function App() {
 
   const marketplaceSectionRef = useRef<HTMLDivElement>(null);
 
+  const getMaterialIdFromPath = () => {
+    const pathParts = window.location.pathname
+      .split('/')
+      .filter(Boolean);
+
+    if (pathParts[0]?.toLowerCase() !== 'material' || !pathParts[1]) {
+      return null;
+    }
+
+    return decodeURIComponent(pathParts[1]);
+  };
+
+  const openBook = (book: Book, updateUrl = true) => {
+    setSelectedBook(book);
+
+    if (updateUrl) {
+      const materialUrl = `/material/${encodeURIComponent(book.id)}`;
+
+      if (window.location.pathname !== materialUrl) {
+        window.history.pushState(
+          { campusReadMaterialId: book.id },
+          '',
+          materialUrl
+        );
+      }
+    }
+  };
+
+  const closeBook = () => {
+    setSelectedBook(null);
+
+    const materialId = getMaterialIdFromPath();
+
+    if (materialId) {
+      window.history.back();
+    }
+  };
+
   // URL Path Router & Affiliate Ref Code Detection
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const refCode = params.get('ref');
+
     if (refCode) {
       sessionStorage.setItem('campus_read_affiliate_ref', refCode);
     }
 
     const path = window.location.pathname.toLowerCase();
+
     if (path.includes('/super-admin/login')) {
       // /super-admin/login opens the SAME single unified login form
       openAuthModal('login');
@@ -92,66 +132,107 @@ export default function App() {
 
     const handlePopState = () => {
       const p = window.location.pathname.toLowerCase();
-      if (p.includes('/student')) setCurrentView('STUDENT_DASHBOARD');
-      else if (p.includes('/lecturer')) setCurrentView('LECTURER_DASHBOARD');
-      else if (p.includes('/affiliate')) setCurrentView('AFFILIATE_DASHBOARD');
-      else if (p.includes('/super-admin')) setCurrentView('SUPER_ADMIN_DASHBOARD');
-      else setCurrentView('HOME');
+
+      if (p.includes('/student')) {
+        setCurrentView('STUDENT_DASHBOARD');
+        setSelectedBook(null);
+      } else if (p.includes('/lecturer')) {
+        setCurrentView('LECTURER_DASHBOARD');
+        setSelectedBook(null);
+      } else if (p.includes('/affiliate')) {
+        setCurrentView('AFFILIATE_DASHBOARD');
+        setSelectedBook(null);
+      } else if (p.includes('/super-admin')) {
+        setCurrentView('SUPER_ADMIN_DASHBOARD');
+        setSelectedBook(null);
+      } else if (p.includes('/bookstore')) {
+        setCurrentView('BOOKSTORE');
+        setSelectedBook(null);
+      } else if (p.includes('/material/')) {
+        // The material effect below will open the correct book.
+        setCurrentView('HOME');
+      } else {
+        setCurrentView('HOME');
+        setSelectedBook(null);
+      }
     };
 
     window.addEventListener('popstate', handlePopState);
+
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
-useEffect(() => {
-  const approvedBooksQuery = query(
-    collection(db, 'books'),
-    where('approvalStatus', '==', 'APPROVED')
-  );
 
-  const unsubscribe = onSnapshot(
-    approvedBooksQuery,
-    (snapshot) => {
-      const approvedFirestoreBooks: Book[] = snapshot.docs.map((bookDoc) => ({
-        ...bookDoc.data(),
-        id: bookDoc.id,
-      } as Book));
+  // Load approved books from Firestore
+  useEffect(() => {
+    const approvedBooksQuery = query(
+      collection(db, 'books'),
+      where('approvalStatus', '==', 'APPROVED')
+    );
 
-      // Prevent duplicate books when a Firestore book has
-      // the same ID as one of the demo/mock books.
-      const firestoreIds = new Set(
-        approvedFirestoreBooks.map((book) => book.id)
-      );
+    const unsubscribe = onSnapshot(
+      approvedBooksQuery,
+      (snapshot) => {
+        const approvedFirestoreBooks: Book[] = snapshot.docs.map((bookDoc) => ({
+          ...bookDoc.data(),
+          id: bookDoc.id,
+        } as Book));
 
-      const remainingMockBooks = MOCK_BOOKS.filter(
-        (mockBook) => !firestoreIds.has(mockBook.id)
-      );
+        // Prevent duplicate books when a Firestore book has
+        // the same ID as one of the demo/mock books.
+        const firestoreIds = new Set(
+          approvedFirestoreBooks.map((book) => book.id)
+        );
 
-      // Approved Firestore books appear first.
-      // Existing mock books remain available as demo content.
-      setBooks([
-        ...approvedFirestoreBooks,
-        ...remainingMockBooks,
-      ]);
+        const remainingMockBooks = MOCK_BOOKS.filter(
+          (mockBook) => !firestoreIds.has(mockBook.id)
+        );
 
-      setBooksLoading(false);
-    },
-    (error) => {
-      console.error('Student catalogue Firestore error:', error);
+        // Approved Firestore books appear first.
+        // Existing mock books remain available as demo content.
+        setBooks([
+          ...approvedFirestoreBooks,
+          ...remainingMockBooks,
+        ]);
 
-      // Keep the existing catalogue available if Firestore
-      // temporarily fails.
-      setBooks(MOCK_BOOKS);
-      setBooksLoading(false);
+        setBooksLoading(false);
+      },
+      (error) => {
+        console.error('Student catalogue Firestore error:', error);
+
+        // Keep the existing catalogue available if Firestore
+        // temporarily fails.
+        setBooks(MOCK_BOOKS);
+        setBooksLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // Open a specific approved material from a shareable URL:
+  // https://campusread.org/material/BOOK_ID
+  useEffect(() => {
+    const materialId = getMaterialIdFromPath();
+
+    if (!materialId || booksLoading) {
+      return;
     }
-  );
 
-  return () => unsubscribe();
-}, []);
+    const sharedBook = books.find((book) => book.id === materialId);
+
+    if (sharedBook) {
+      setSelectedBook(sharedBook);
+    } else {
+      console.warn(`CampusRead material not found: ${materialId}`);
+    }
+  }, [books, booksLoading]);
+
   // Fetch dynamic website settings from Firestore
   useEffect(() => {
     async function loadSettings() {
       try {
         const snap = await getDoc(doc(db, 'settings', 'websiteSettings'));
+
         if (snap.exists()) {
           setWebsiteSettings(snap.data() as WebsiteSettings);
         }
@@ -159,6 +240,7 @@ useEffect(() => {
         console.warn('Could not load website settings:', err);
       }
     }
+
     loadSettings();
   }, []);
 
@@ -166,6 +248,7 @@ useEffect(() => {
   const handleAddToCart = (book: Book) => {
     setCartItems((prev) => {
       const existing = prev.find((item) => item.book.id === book.id);
+
       if (existing) {
         return prev.map((item) =>
           item.book.id === book.id
@@ -173,8 +256,10 @@ useEffect(() => {
             : item
         );
       }
+
       return [...prev, { book, quantity: 1 }];
     });
+
     setIsCartOpen(true);
   };
 
@@ -183,6 +268,7 @@ useEffect(() => {
       handleRemoveFromCart(bookId);
       return;
     }
+
     setCartItems((prev) =>
       prev.map((item) =>
         item.book.id === bookId ? { ...item, quantity } : item
@@ -217,27 +303,42 @@ useEffect(() => {
     setIsSavedOnly(false);
   };
 
-  const openAuthModal = (mode: 'login' | 'register', registerRole?: 'STUDENT' | 'LECTURER' | 'AFFILIATE') => {
+  const openAuthModal = (
+    mode: 'login' | 'register',
+    registerRole?: 'STUDENT' | 'LECTURER' | 'AFFILIATE'
+  ) => {
     setAuthMode(mode);
+
     if (registerRole) {
       setAuthRegisterRole(registerRole);
     }
+
     setIsAuthOpen(true);
   };
 
   const handleAuthRedirect = (role: string) => {
-    if (role === 'STUDENT') setCurrentView('STUDENT_DASHBOARD');
-    else if (role === 'LECTURER') setCurrentView('LECTURER_DASHBOARD');
-    else if (role === 'AFFILIATE') setCurrentView('AFFILIATE_DASHBOARD');
-    else if (role === 'SUPER_ADMIN' || role === 'ADMIN') setCurrentView('SUPER_ADMIN_DASHBOARD');
-    else setCurrentView('HOME');
+    if (role === 'STUDENT') {
+      setCurrentView('STUDENT_DASHBOARD');
+    } else if (role === 'LECTURER') {
+      setCurrentView('LECTURER_DASHBOARD');
+    } else if (role === 'AFFILIATE') {
+      setCurrentView('AFFILIATE_DASHBOARD');
+    } else if (role === 'SUPER_ADMIN' || role === 'ADMIN') {
+      setCurrentView('SUPER_ADMIN_DASHBOARD');
+    } else {
+      setCurrentView('HOME');
+    }
   };
 
   // Filtered books
   const filteredBooks = useMemo(() => {
     return books.filter((book) => {
       // Past Question view check
-      if (currentView === 'PAST_QUESTIONS' && !book.isPastQuestion && book.format !== 'Past Question') {
+      if (
+        currentView === 'PAST_QUESTIONS' &&
+        !book.isPastQuestion &&
+        book.format !== 'Past Question'
+      ) {
         return false;
       }
 
@@ -256,6 +357,7 @@ useEffect(() => {
       // Institution Filter
       if (selectedInstitution !== 'all') {
         const instLower = selectedInstitution.toLowerCase();
+
         const matchesInstitution =
           book.institution.toLowerCase().includes(instLower) ||
           (instLower === 'unilag' && book.institution.includes('Lagos')) ||
@@ -270,20 +372,35 @@ useEffect(() => {
       // Search Query Filter
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
+
         const matchTitle = book.title.toLowerCase().includes(q);
         const matchAuthor = book.author.toLowerCase().includes(q);
         const matchDept = book.department.toLowerCase().includes(q);
         const matchInst = book.institution.toLowerCase().includes(q);
         const matchIsbn = book.isbn.toLowerCase().includes(q);
 
-        if (!matchTitle && !matchAuthor && !matchDept && !matchInst && !matchIsbn) {
+        if (
+          !matchTitle &&
+          !matchAuthor &&
+          !matchDept &&
+          !matchInst &&
+          !matchIsbn
+        ) {
           return false;
         }
       }
 
       return true;
     });
-  }, [books, selectedTab, selectedInstitution, searchQuery, isSavedOnly, savedBookIds, currentView]);
+  }, [
+    books,
+    selectedTab,
+    selectedInstitution,
+    searchQuery,
+    isSavedOnly,
+    savedBookIds,
+    currentView,
+  ]);
 
   const categories: { id: ActiveTab; label: string }[] = [
     { id: 'all', label: 'All Collections' },
@@ -316,7 +433,7 @@ useEffect(() => {
       <main className="flex-1 w-full">
         {currentView === 'STUDENT_DASHBOARD' ? (
           <StudentDashboard
-            onOpenBook={(b) => setSelectedBook(b)}
+            onOpenBook={(b) => openBook(b)}
             onOpenReader={(b) => setReaderBook(b)}
             onNavigateToBookstore={() => setCurrentView('BOOKSTORE')}
           />
@@ -350,7 +467,10 @@ useEffect(() => {
                       key={cat.id}
                       onClick={() => {
                         setSelectedTab(cat.id);
-                        if (currentView === 'CATEGORIES') setCurrentView('HOME');
+
+                        if (currentView === 'CATEGORIES') {
+                          setCurrentView('HOME');
+                        }
                       }}
                       className={`px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
                         selectedTab === cat.id
@@ -373,21 +493,27 @@ useEffect(() => {
 
               {/* Book Grid */}
               {booksLoading ? (
-  <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
-    <div className="w-10 h-10 border-4 border-slate-200 border-t-blue-900 rounded-full animate-spin mx-auto mb-4" />
-    <p className="text-sm font-semibold text-slate-600">
-      Loading approved academic materials...
-    </p>
-  </div>
-) : filteredBooks.length === 0 ? (
+                <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+                  <div className="w-10 h-10 border-4 border-slate-200 border-t-blue-900 rounded-full animate-spin mx-auto mb-4" />
+                  <p className="text-sm font-semibold text-slate-600">
+                    Loading approved academic materials...
+                  </p>
+                </div>
+              ) : filteredBooks.length === 0 ? (
                 <div className="bg-white rounded-xl border border-slate-200 p-12 text-center space-y-3">
                   <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 mx-auto flex items-center justify-center">
                     <BookOpen className="w-6 h-6" />
                   </div>
-                  <h3 className="font-bold text-slate-800 text-base">No academic materials match your criteria</h3>
+
+                  <h3 className="font-bold text-slate-800 text-base">
+                    No academic materials match your criteria
+                  </h3>
+
                   <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                    Try clearing search parameters or switching faculties to discover available textbooks.
+                    Try clearing search parameters or switching faculties to
+                    discover available textbooks.
                   </p>
+
                   <button
                     onClick={resetFilters}
                     className="px-4 py-2 bg-slate-900 text-white rounded-md text-xs font-bold hover:bg-slate-800 cursor-pointer"
@@ -402,10 +528,12 @@ useEffect(() => {
                       key={book.id}
                       book={book}
                       isSaved={savedBookIds.includes(book.id)}
-                      onSelectBook={(selected) => setSelectedBook(selected)}
+                      onSelectBook={(selected) => openBook(selected)}
                       onAddToCart={(cartBook) => handleAddToCart(cartBook)}
                       onToggleSave={(savedBook) => handleToggleSave(savedBook)}
-                      onPreviewExcerpt={(readerTarget) => setReaderBook(readerTarget)}
+                      onPreviewExcerpt={(readerTarget) =>
+                        setReaderBook(readerTarget)
+                      }
                     />
                   ))}
                 </div>
@@ -418,7 +546,9 @@ useEffect(() => {
       {/* Institutional Footer */}
       <Footer
         settings={websiteSettings}
-        onOpenLecturerPortal={() => openAuthModal('register', 'LECTURER')}
+        onOpenLecturerPortal={() =>
+          openAuthModal('register', 'LECTURER')
+        }
         onOpenHowItWorks={() => setIsHowItWorksOpen(true)}
       />
 
@@ -442,14 +572,14 @@ useEffect(() => {
         <BookDetailModal
           book={selectedBook}
           isSaved={savedBookIds.includes(selectedBook.id)}
-          onClose={() => setSelectedBook(null)}
+          onClose={closeBook}
           onAddToCart={(b) => {
             handleAddToCart(b);
-            setSelectedBook(null);
+            closeBook();
           }}
           onToggleSave={handleToggleSave}
           onOpenReader={(b) => {
-            setSelectedBook(null);
+            closeBook();
             setReaderBook(b);
           }}
         />
