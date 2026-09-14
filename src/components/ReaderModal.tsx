@@ -493,7 +493,7 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({ book, purchaseRef = 'C
               <p className="font-bold">{loadingError}</p>
             </div>
           ) : (
-            <div className={`relative shadow-2xl rounded-lg overflow-hidden border border-slate-300 dark:border-slate-800 ${themeMode === 'sepia' ? 'sepia-[0.3]' : themeMode === 'dark' ? 'invert-[0.9] hue-rotate-180' : ''}`}>
+            <div className={`relative w-[400px] max-w-full shadow-2xl rounded-lg overflow-hidden border border-slate-300 dark:border-slate-800 ${themeMode === 'sepia' ? 'sepia-[0.3]' : themeMode === 'dark' ? 'invert-[0.9] hue-rotate-180' : ''}`}>
               <canvas ref={canvasRef} className="block" />
             </div>
           )}
