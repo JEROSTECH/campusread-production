@@ -83,6 +83,7 @@ interface VerifiedAuthUser {
   uid: string;
   email: string;
   emailVerified: boolean;
+  idToken: string;
 }
 
 async function verifyFirebaseIdToken(token: string): Promise<VerifiedAuthUser | null> {
@@ -109,7 +110,8 @@ async function verifyFirebaseIdToken(token: string): Promise<VerifiedAuthUser | 
         return {
           uid: user.localId,
           email: (user.email || "").toLowerCase(),
-          emailVerified: !!user.emailVerified
+          emailVerified: !!user.emailVerified,
+          idToken: cleanToken
         };
       }
     } else {
@@ -132,7 +134,8 @@ async function verifyFirebaseIdToken(token: string): Promise<VerifiedAuthUser | 
         return {
           uid: payload.sub || payload.user_id,
           email: (payload.email || "").toLowerCase(),
-          emailVerified: !!payload.email_verified
+          emailVerified: !!payload.email_verified,
+          idToken: cleanToken
         };
       }
     }
