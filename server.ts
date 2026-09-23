@@ -243,7 +243,63 @@ async function fetchFirestoreDocument(collection: string, docId: string, idToken
     return null;
   }
 }
+async function createFirestoreDocument(
+  collection: string,
+  docId: string,
+  data: Record<string, any>,
+  idToken?: string
+): Promise<{ success: boolean; alreadyExists: boolean }> {
+  try {
+    const url =
+      `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}` +
+      `/databases/(default)/documents/${collection}?documentId=${encodeURIComponent(docId)}` +
+      `&key=${FIREBASE_API_KEY}`;
 
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (idToken) {
+      headers["Authorization"] = `Bearer ${idToken}`;
+    }
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        fields: toFirestoreFields(data),
+      }),
+    });
+
+    if (res.ok) {
+      return { success: true, alreadyExists: false };
+    }
+
+    const errText = await res.text().catch(() => "");
+
+    // Firestore returns ALREADY_EXISTS when documentId is already present.
+    if (
+      res.status === 409 ||
+      errText.includes("ALREADY_EXISTS") ||
+      errText.includes("already exists")
+    ) {
+      return { success: false, alreadyExists: true };
+    }
+
+    console.warn(
+      `[Firestore Create Error] ${collection}/${docId} returned HTTP ${res.status}: ${errText}`
+    );
+
+    return { success: false, alreadyExists: false };
+  } catch (err) {
+    console.error(
+      `Firestore create error for ${collection}/${docId}:`,
+      err
+    );
+
+    return { success: false, alreadyExists: false };
+  }
+}
 async function saveFirestoreDocument(collection: string, docId: string, data: Record<string, any>, idToken?: string): Promise<boolean> {
   try {
     const url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/${collection}/${encodeURIComponent(docId)}?key=${FIREBASE_API_KEY}`;
@@ -360,7 +416,100 @@ async function queryFirestoreWalletTransactions(uid: string, idToken?: string): 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", app: "Campus Read Server", time: new Date().toISOString() });
 });
+// -------------------------------------------------------------
+// POST /api/matric/reserve — Reserve a unique student matriculation number
+// -------------------------------------------------------------
+app.post("/api/matric/reserve", async (req, res) => {
+  try {
+    // 1. Authenticate the Firebase user
+    const authHeader = req.headers["authorization"];
 
+    if (!authHeader) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized: Missing Authorization header."
+      });
+    }
+
+    const verifiedAuth = await verifyFirebaseIdToken(authHeader);
+
+    if (!verifiedAuth) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized: Invalid or expired Firebase ID token."
+      });
+    }
+
+    const authenticatedUid = verifiedAuth.uid;
+
+    // 2. Validate matriculation number
+    const rawMatric = String(req.body?.matricNumber || "")
+      .trim()
+      .toUpperCase();
+
+    const normalizedMatric = rawMatric.replace(/[^A-Z0-9]/gi, "");
+
+    if (!rawMatric || !normalizedMatric) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid matriculation number is required."
+      });
+    }
+
+    // 3. Validate email from the authenticated Firebase account
+    const email = String(verifiedAuth.email || "").trim().toLowerCase();
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "The authenticated account does not have an email address."
+      });
+    }
+
+    // 4. Create the registry document only if it does not already exist.
+    //    The deterministic document ID prevents duplicate matric numbers.
+const result = await createFirestoreDocument(
+  "matricRegistry",
+  normalizedMatric,
+  {
+    uid: authenticatedUid,
+    email,
+    matricNumber: rawMatric,
+    normalizedMatric,
+    createdAt: new Date().toISOString()
+  },
+  verifiedAuth.idToken
+);
+
+    if (result.alreadyExists) {
+      return res.status(409).json({
+        success: false,
+        message: `Matriculation Number ${rawMatric} is already registered.`
+      });
+    }
+
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        message: "Unable to reserve the matriculation number. Please try again."
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Matriculation number reserved successfully.",
+      matricNumber: rawMatric,
+      normalizedMatric
+    });
+  } catch (error) {
+    console.error("[Matric Registry] Reservation error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "An unexpected error occurred while reserving the matriculation number."
+    });
+  }
+});
 // -------------------------------------------------------------
 // POST /api/materials/upload — Lecturer PDF Upload Endpoint
 // -------------------------------------------------------------

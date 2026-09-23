@@ -375,6 +375,21 @@ service cloud.firestore {
       allow list: if isSuperAdmin();
       allow create: if isValidId(logId) && isValidAuditLog(incoming()) && isSignedIn();
       allow update, delete: if false; // Immutable audit trails
-    }
+}
+
+// -------------------------------------------------------------
+// Student Matriculation Registry Rules
+// -------------------------------------------------------------
+match /matricRegistry/{matricId} {
+  allow get: if isValidId(matricId);
+
+  allow create: if isValidId(matricId) &&
+    isSignedIn() &&
+    request.resource.data.uid == request.auth.uid &&
+    request.resource.data.email == request.auth.token.email &&
+    request.resource.data.normalizedMatric == matricId;
+
+  allow update, delete: if isSuperAdmin();
+}
   }
 }

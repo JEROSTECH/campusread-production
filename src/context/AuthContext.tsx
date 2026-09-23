@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { 
-  createUserWithEmailAndPassword, 
-  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  deleteUser,
   signOut, 
   onAuthStateChanged,
   sendPasswordResetEmail,
@@ -9,13 +10,14 @@ import {
   User as FirebaseUser 
 } from 'firebase/auth';
 import { 
-  doc, 
-  getDoc, 
-  setDoc, 
-  collection, 
-  query, 
-  where, 
-  getDocs 
+  doc,
+  getDoc,
+  setDoc,
+  deleteDoc,
+  collection,
+  query,
+  where,
+  getDocs
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { clearLocalPdfCache } from '../lib/pdfStorage';
@@ -127,56 +129,123 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   // 1. STUDENT Registration
-  const registerStudent = async (data: Omit<StudentProfile, 'uid' | 'role' | 'accountType' | 'walletBalance' | 'status' | 'createdAt'> & { password: string }): Promise<StudentProfile> => {
-    const rawMatric = data.matricNumber.trim().toUpperCase();
-    const strippedMatric = rawMatric.replace(/[^A-Z0-9]/gi, ''); // e.g. CSC2024001
+const registerStudent = async (
+  data: Omit<StudentProfile, 'uid' | 'role' | 'accountType' | 'walletBalance' | 'status' | 'createdAt'> & { password: string }
+): Promise<StudentProfile> => {
+  const rawMatric = data.matricNumber.trim().toUpperCase();
+  const strippedMatric = rawMatric.replace(/[^A-Z0-9]/gi, '');
 
-    // Check matric number uniqueness in Firestore
-    const q1 = query(collection(db, 'users'), where('matricNumber', '==', rawMatric));
-    const q2 = query(collection(db, 'users'), where('normalizedMatric', '==', strippedMatric));
-    
-    const [snap1, snap2] = await Promise.all([getDocs(q1), getDocs(q2)]);
-    if (!snap1.empty || !snap2.empty) {
-      throw new Error(`Matriculation Number ${rawMatric} is already registered.`);
+  if (!rawMatric || !strippedMatric) {
+    throw new Error("A valid Matriculation Number is required.");
+  }
+
+  // Create the Firebase Auth account first so the server can verify
+  // the authenticated user's ID token.
+  const userCred = await createUserWithEmailAndPassword(
+    auth,
+    data.email.trim(),
+    data.password
+  );
+
+  const uid = userCred.user.uid;
+
+  const profile: StudentProfile & { normalizedMatric?: string } = {
+    uid,
+    fullName: data.fullName.trim(),
+    email: data.email.trim().toLowerCase(),
+    matricNumber: rawMatric,
+    normalizedMatric: strippedMatric,
+    institution: data.institution,
+    faculty: data.faculty,
+    department: data.department,
+    level: data.level,
+    role: 'STUDENT',
+    accountType: 'STUDENT',
+    walletBalance: 0.0,
+    status: 'ACTIVE',
+    createdAt: new Date().toISOString(),
+  };
+
+  try {
+    // Create the student profile while the newly-created Firebase
+    // account is authenticated. This uses the existing secure users
+    // create rule and does NOT query the users collection.
+    await setDoc(doc(db, 'users', uid), profile);
+
+    // Get a fresh Firebase ID token for the authenticated server request.
+    const idToken = await userCred.user.getIdToken(true);
+
+    // Reserve the matriculation number through the authenticated server.
+    // The server uses a deterministic document ID and create-only operation,
+    // preventing duplicate matriculation numbers.
+    const reserveResponse = await fetch('/api/matric/reserve', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({
+        matricNumber: rawMatric,
+      }),
+    });
+
+    let reserveResult: any = null;
+
+    try {
+      reserveResult = await reserveResponse.json();
+    } catch {
+      reserveResult = null;
     }
 
-    const userCred = await createUserWithEmailAndPassword(auth, data.email.trim(), data.password);
-    const uid = userCred.user.uid;
+    if (!reserveResponse.ok || !reserveResult?.success) {
+      // Roll back the newly-created profile and Firebase account if
+      // matriculation-number reservation fails.
+      try {
+        await deleteDoc(doc(db, 'users', uid));
+      } catch (cleanupError) {
+        console.warn("Student profile cleanup warning:", cleanupError);
+      }
 
-    // Send email verification
+      try {
+        await deleteUser(userCred.user);
+      } catch (cleanupError) {
+        console.warn("Firebase account cleanup warning:", cleanupError);
+      }
+
+      if (reserveResponse.status === 409) {
+        throw new Error(
+          reserveResult?.message ||
+          `Matriculation Number ${rawMatric} is already registered.`
+        );
+      }
+
+      throw new Error(
+        reserveResult?.message ||
+        "Unable to reserve the matriculation number. Please try again."
+      );
+    }
+
+    // Send email verification only after the student profile and
+    // matriculation reservation have both succeeded.
     try {
       await sendEmailVerification(userCred.user);
     } catch (e) {
       console.warn("Email verification send warning:", e);
     }
 
-    const profile: StudentProfile & { normalizedMatric?: string } = {
-      uid,
-      fullName: data.fullName.trim(),
-      email: data.email.trim().toLowerCase(),
-      matricNumber: rawMatric,
-      normalizedMatric: strippedMatric,
-      institution: data.institution,
-      faculty: data.faculty,
-      department: data.department,
-      level: data.level,
-      role: 'STUDENT',
-      accountType: 'STUDENT',
-      walletBalance: 0.0,
-      status: 'ACTIVE',
-      createdAt: new Date().toISOString(),
-    };
-
-    try {
-      await setDoc(doc(db, 'users', uid), profile);
-      setUserProfile(profile);
-      return profile;
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `users/${uid}`);
+    setUserProfile(profile);
+    return profile;
+  } catch (err) {
+    // The cleanup above handles reservation failures. This catch preserves
+    // the existing Firestore error handling for profile creation failures.
+    if (err instanceof Error && err.message) {
       throw err;
     }
-  };
 
+    handleFirestoreError(err, OperationType.WRITE, `users/${uid}`);
+    throw err;
+  }
+};
   // 2. LECTURER Registration
   const registerLecturer = async (data: Omit<LecturerProfile, 'uid' | 'role' | 'accountType' | 'earningsBalance' | 'status' | 'createdAt'> & { password: string }): Promise<LecturerProfile> => {
     const userCred = await createUserWithEmailAndPassword(auth, data.email.trim(), data.password);
@@ -288,36 +357,67 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
     } else {
       // Matriculation Number Login
-      const rawMatric = rawIdentifier.toUpperCase();
-      const strippedMatric = rawMatric.replace(/[^A-Z0-9]/gi, '');
+const rawMatric = rawIdentifier.toUpperCase();
+const strippedMatric = rawMatric.replace(/[^A-Z0-9]/gi, '');
 
-      const q1 = query(collection(db, 'users'), where('matricNumber', '==', rawMatric));
-      const q2 = query(collection(db, 'users'), where('normalizedMatric', '==', strippedMatric));
+if (!strippedMatric) {
+  throw new Error("Please enter a valid matriculation number.");
+}
 
-      let querySnap = await getDocs(q1);
-      if (querySnap.empty) {
-        querySnap = await getDocs(q2);
-      }
+// Look up the specific matriculation registry document.
+// This avoids querying the protected users collection.
+const registrySnap = await getDoc(
+  doc(db, 'matricRegistry', strippedMatric)
+);
 
-      if (querySnap.empty) {
-        throw new Error(`No registered student account found for Matriculation Number: ${rawMatric}`);
-      }
+if (!registrySnap.exists()) {
+  throw new Error(
+    `No registered student account found for Matriculation Number: ${rawMatric}`
+  );
+}
 
-      const studentData = querySnap.docs[0].data() as StudentProfile;
-      if (!studentData.email) {
-        throw new Error("Student profile is missing an associated email address.");
-      }
+const registryData = registrySnap.data() as {
+  uid?: string;
+  email?: string;
+  matricNumber?: string;
+  normalizedMatric?: string;
+};
 
-      try {
-        const userCred = await signInWithEmailAndPassword(auth, studentData.email, password);
-        const uid = userCred.user.uid;
-        const userSnap = await getDoc(doc(db, 'users', uid));
-        const prof = userSnap.exists() ? (userSnap.data() as UserProfile) : studentData;
-        setUserProfile(prof);
-        return prof;
-      } catch (err) {
-        throw new Error(translateFirebaseAuthError(err));
-      }
+if (!registryData.email) {
+  throw new Error(
+    "Student matriculation record is missing its associated email address."
+  );
+}
+
+try {
+  const userCred = await signInWithEmailAndPassword(
+    auth,
+    registryData.email,
+    password
+  );
+
+  // Verify that the matric registry belongs to the authenticated account.
+  if (registryData.uid && registryData.uid !== userCred.user.uid) {
+    throw new Error(
+      "Student matriculation record does not match the authenticated account."
+    );
+  }
+
+  const uid = userCred.user.uid;
+  const userSnap = await getDoc(doc(db, 'users', uid));
+
+  if (!userSnap.exists()) {
+    throw new Error(
+      "Your account was authenticated, but your CampusRead profile could not be loaded. Please contact the administrator."
+    );
+  }
+
+  const prof = userSnap.data() as UserProfile;
+  setUserProfile(prof);
+  return prof;
+} catch (err) {
+  throw new Error(translateFirebaseAuthError(err));
+}
     }
   };
 
