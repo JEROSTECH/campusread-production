@@ -7,65 +7,78 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
     private var screenProtectionCoverView: UIView?
 
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Register iOS Screen Capture and Screen Mirroring protection notification observer
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+    ) -> Bool {
         setupScreenCaptureProtection()
         return true
     }
 
     // MARK: - iOS DRM & Screen Capture Protection
+
     private func setupScreenCaptureProtection() {
-        // Listen for screen capture/recording/AirPlay mirroring status changes
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(screenCapturedDidChange),
             name: UIScreen.capturedDidChangeNotification,
             object: nil
         )
-
-        // Listen for app going into background to shield cached snapshot
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(applicationWillResignActive),
-            name: UIApplication.willResignActiveNotification,
-            object: nil
-        )
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(applicationDidBecomeActive),
-            name: UIApplication.didBecomeActiveNotification,
-            object: nil
-        )
     }
 
     @objc private func screenCapturedDidChange() {
         let isCaptured = UIScreen.main.isCaptured
+
         DispatchQueue.main.async { [weak self] in
             if isCaptured {
-                self?.showScreenProtectionOverlay(reason: "Screen Recording or Mirroring Detected.\nCampusRead academic content is protected under DRM policy.")
+                self?.showScreenProtectionOverlay(
+                    reason: "Screen Recording or Mirroring Detected.\nCampusRead academic content is protected under DRM policy."
+                )
             } else {
                 self?.hideScreenProtectionOverlay()
             }
         }
     }
 
-    @objc private func applicationWillResignActive() {
+    func applicationWillResignActive(_ application: UIApplication) {
         showScreenProtectionOverlay(reason: "CampusRead Academic Reader")
     }
 
-    @objc private func applicationDidBecomeActive() {
+    func applicationDidBecomeActive(_ application: UIApplication) {
         if !UIScreen.main.isCaptured {
             hideScreenProtectionOverlay()
         }
     }
 
+    private func currentWindow() -> UIWindow? {
+        if let window = window {
+            return window
+        }
+
+        let scenes = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .filter {
+                $0.activationState == .foregroundActive ||
+                $0.activationState == .foregroundInactive
+            }
+
+        return scenes
+            .flatMap { $0.windows }
+            .first { $0.isKeyWindow }
+            ?? scenes.flatMap { $0.windows }.first
+    }
+
     private func showScreenProtectionOverlay(reason: String) {
-        guard let window = self.window else { return }
+        guard let window = currentWindow() else { return }
         if screenProtectionCoverView != nil { return }
 
         let cover = UIView(frame: window.bounds)
-        cover.backgroundColor = UIColor(red: 0.08, green: 0.10, blue: 0.18, alpha: 1.0)
+        cover.backgroundColor = UIColor(
+            red: 0.08,
+            green: 0.10,
+            blue: 0.18,
+            alpha: 1.0
+        )
         cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
 
         let label = UILabel()
@@ -77,23 +90,46 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         label.translatesAutoresizingMaskIntoConstraints = false
 
         cover.addSubview(label)
+
         NSLayoutConstraint.activate([
             label.centerXAnchor.constraint(equalTo: cover.centerXAnchor),
             label.centerYAnchor.constraint(equalTo: cover.centerYAnchor),
-            label.leadingAnchor.constraint(greaterThanOrEqualTo: cover.leadingAnchor, constant: 24),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: cover.trailingAnchor, constant: -24)
+            label.leadingAnchor.constraint(
+                greaterThanOrEqualTo: cover.leadingAnchor,
+                constant: 24
+            ),
+            label.trailingAnchor.constraint(
+                lessThanOrEqualTo: cover.trailingAnchor,
+                constant: -24
+            )
         ])
 
         window.addSubview(cover)
-        self.screenProtectionCoverView = cover
+        screenProtectionCoverView = cover
     }
 
     private func hideScreenProtectionOverlay() {
-        self.screenProtectionCoverView?.removeFromSuperview()
-        self.screenProtectionCoverView = nil
+        screenProtectionCoverView?.removeFromSuperview()
+        screenProtectionCoverView = nil
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
         NotificationCenter.default.removeObserver(self)
+    }
+
+    // MARK: - UIScene Support
+
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting connectingSceneSession: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        let config = UISceneConfiguration(
+            name: "Default Configuration",
+            sessionRole: connectingSceneSession.role
+        )
+
+        config.delegateClass = SceneDelegate.self
+        return config
     }
 }
