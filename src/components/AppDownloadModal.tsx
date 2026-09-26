@@ -1,10 +1,9 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import {
   X,
   Smartphone,
   Download,
   Apple,
-  CheckCircle,
   Shield,
   ArrowLeft,
   ExternalLink
@@ -20,16 +19,6 @@ interface AppDownloadModalProps {
 
 type Platform = 'android' | 'ios' | null;
 
-const isRealAppStoreUrl = (url?: string) =>
-  !!url &&
-  url.startsWith('https://apps.apple.com/') &&
-  !url.includes('id12345678');
-
-const isRealTestFlightUrl = (url?: string) =>
-  !!url &&
-  url.startsWith('https://testflight.apple.com/join/') &&
-  !url.endsWith('/campusread');
-
 export const AppDownloadModal: React.FC<AppDownloadModalProps> = ({
   isOpen,
   onClose
@@ -37,10 +26,8 @@ export const AppDownloadModal: React.FC<AppDownloadModalProps> = ({
   const [selectedPlatform, setSelectedPlatform] = useState<Platform>(null);
 
   const [settings, setSettings] = useState<AppSettings>({
-    androidApkUrl:
-      'https://campusread.com.ng/download/campusread.apk',
-    playStoreUrl:
-      'https://play.google.com/store/apps/details?id=com.campusread.app',
+    androidApkUrl: 'https://campusread.com.ng/download/campusread.apk',
+    playStoreUrl: 'https://play.google.com/store/apps/details?id=com.campusread.app',
     appStoreUrl: '',
     testFlightUrl: '',
     showAppBanner: true,
@@ -70,9 +57,6 @@ export const AppDownloadModal: React.FC<AppDownloadModalProps> = ({
   }, [isOpen]);
 
   if (!isOpen) return null;
-
-  const appStoreAvailable = isRealAppStoreUrl(settings.appStoreUrl);
-  const testFlightAvailable = isRealTestFlightUrl(settings.testFlightUrl);
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
@@ -142,7 +126,7 @@ export const AppDownloadModal: React.FC<AppDownloadModalProps> = ({
                 </h3>
 
                 <p className="text-xs text-slate-600 mt-1 leading-relaxed">
-                  Get CampusRead through the Apple App Store or TestFlight.
+                  Install CampusRead for free as a web app using Safari.
                 </p>
 
                 <div className="mt-4 text-xs font-extrabold text-blue-900">
@@ -163,7 +147,6 @@ export const AppDownloadModal: React.FC<AppDownloadModalProps> = ({
           </>
         ) : (
           <>
-            {/* Header */}
             <div className="flex items-center gap-3 mb-6">
               <button
                 type="button"
@@ -190,10 +173,11 @@ export const AppDownloadModal: React.FC<AppDownloadModalProps> = ({
             {selectedPlatform === 'android' ? (
               <div className="space-y-4">
 
-                {/* Existing APK */}
+                {/* Existing Android APK */}
                 <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-5">
                   <div className="flex items-center gap-2 mb-2">
                     <Download className="w-5 h-5 text-emerald-700" />
+
                     <span className="font-extrabold text-sm text-slate-900">
                       Android Direct APK
                     </span>
@@ -214,13 +198,14 @@ export const AppDownloadModal: React.FC<AppDownloadModalProps> = ({
                   </a>
                 </div>
 
-                {/* Play Store */}
+                {/* Google Play Store */}
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-5">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <span className="font-extrabold text-xs text-slate-900 block">
                         Google Play Store
                       </span>
+
                       <span className="text-[11px] text-slate-500">
                         Official Android market release
                       </span>
@@ -242,64 +227,59 @@ export const AppDownloadModal: React.FC<AppDownloadModalProps> = ({
             ) : (
               <div className="space-y-4">
 
-                {/* App Store */}
+                {/* Free iPhone / iPad Web App */}
                 <div className="bg-blue-50 border border-blue-200 rounded-xl p-5">
                   <div className="flex items-center gap-2 mb-2">
                     <Apple className="w-5 h-5 text-blue-900" />
+
                     <span className="font-extrabold text-sm text-slate-900">
-                      Apple App Store
+                      Install CampusRead on iPhone / iPad
                     </span>
                   </div>
 
-                  <p className="text-xs text-slate-600 mb-4">
-                    Install the official CampusRead iPhone and iPad app from Apple.
+                  <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+                    You can install CampusRead on your iPhone or iPad for free
+                    without the App Store. Open CampusRead in Safari and add
+                    it to your Home Screen as a web app.
                   </p>
 
-                  {appStoreAvailable ? (
-                    <a
-                      href={settings.appStoreUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full py-3 bg-blue-900 hover:bg-blue-950 text-white font-extrabold text-xs rounded-lg shadow transition-colors flex items-center justify-center gap-2"
-                    >
-                      <Apple className="w-4 h-4" />
-                      DOWNLOAD FROM APP STORE
-                    </a>
-                  ) : (
-                    <div className="w-full py-3 bg-slate-200 text-slate-500 font-extrabold text-xs rounded-lg text-center">
-                      APP STORE LINK NOT YET AVAILABLE
-                    </div>
-                  )}
+                  <a
+                    href="https://campusread.org"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full py-3 bg-blue-900 hover:bg-blue-950 text-white font-extrabold text-xs rounded-lg shadow transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Apple className="w-4 h-4" />
+                    OPEN CAMPUSREAD
+                    <ExternalLink className="w-4 h-4" />
+                  </a>
                 </div>
 
-                {/* TestFlight */}
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-5">
-                  <div className="flex items-center gap-2 mb-2">
-                    <CheckCircle className="w-5 h-5 text-slate-700" />
-                    <span className="font-extrabold text-sm text-slate-900">
-                      TestFlight
-                    </span>
-                  </div>
+                {/* Installation Instructions */}
+                <div className="bg-white border border-slate-200 rounded-xl p-5">
+                  <h3 className="font-extrabold text-sm text-slate-900 mb-3">
+                    How to install on iPhone / iPad
+                  </h3>
 
-                  <p className="text-xs text-slate-600 mb-4">
-                    Use TestFlight when the CampusRead beta build is available for testing.
+                  <ol className="space-y-2 text-xs text-slate-600 list-decimal list-inside">
+                    <li>Open CampusRead in Safari.</li>
+                    <li>Tap the <strong>Share</strong> button.</li>
+                    <li>Select <strong>Add to Home Screen</strong>.</li>
+                    <li>Turn on <strong>Open as Web App</strong>.</li>
+                    <li>Tap <strong>Add</strong>.</li>
+                  </ol>
+
+                  <p className="mt-4 text-[11px] text-slate-500">
+                    CampusRead will appear on your Home Screen and open like an app.
                   </p>
+                </div>
 
-                  {testFlightAvailable ? (
-                    <a
-                      href={settings.testFlightUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full py-3 bg-slate-800 hover:bg-slate-900 text-white font-extrabold text-xs rounded-lg shadow transition-colors flex items-center justify-center gap-2"
-                    >
-                      JOIN CAMPUSREAD TESTFLIGHT
-                      <ExternalLink className="w-4 h-4" />
-                    </a>
-                  ) : (
-                    <div className="w-full py-3 bg-slate-200 text-slate-500 font-extrabold text-xs rounded-lg text-center">
-                      TESTFLIGHT LINK NOT YET AVAILABLE
-                    </div>
-                  )}
+                {/* Future native iOS release */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    The native CampusRead App Store and TestFlight versions
+                    will be available here after the iOS release is published.
+                  </p>
                 </div>
 
               </div>
