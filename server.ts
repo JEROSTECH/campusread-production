@@ -4,6 +4,8 @@ import fs from "fs";
 import dotenv from "dotenv";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
+import { getApps, initializeApp, applicationDefault } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
 
 dotenv.config();
 
@@ -11,6 +13,12 @@ const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || "campusread-f8102";
 const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || "AIzaSyBoRpDErIy7y1R0aXlPWNREg4mcO5DMd4k";
+
+// Trusted server-side Firebase Admin SDK. Credentials are supplied through GOOGLE_APPLICATION_CREDENTIALS.
+const firebaseAdminApp = getApps().length === 0
+  ? initializeApp({ credential: applicationDefault(), projectId: FIREBASE_PROJECT_ID })
+  : getApps()[0];
+const adminDb = getFirestore(firebaseAdminApp);
 
 // Private storage directory strictly OUTSIDE public web root
 const PRIVATE_STORAGE_DIR = path.join(process.cwd(), "storage_private", "materials");
@@ -370,6 +378,45 @@ async function updateFirestoreFields(collection: string, docId: string, fieldsTo
   }
 }
 
+async function adminGetFirestoreDocument(
+  collection: string,
+  docId: string
+): Promise<Record<string, any> | null> {
+  try {
+    const snapshot = await adminDb.collection(collection).doc(docId).get();
+    if (!snapshot.exists) return null;
+    return snapshot.data() || null;
+  } catch (err) {
+    console.error(`[Admin Firestore Read Error] ${collection}/${docId}:`, err);
+    throw err;
+  }
+}
+
+async function adminSetFirestoreDocument(
+  collection: string,
+  docId: string,
+  data: Record<string, any>
+): Promise<void> {
+  try {
+    await adminDb.collection(collection).doc(docId).set(data);
+  } catch (err) {
+    console.error(`[Admin Firestore Write Error] ${collection}/${docId}:`, err);
+    throw err;
+  }
+}
+
+async function adminUpdateFirestoreFields(
+  collection: string,
+  docId: string,
+  fieldsToUpdate: Record<string, any>
+): Promise<void> {
+  try {
+    await adminDb.collection(collection).doc(docId).update(fieldsToUpdate);
+  } catch (err) {
+    console.error(`[Admin Firestore Update Error] ${collection}/${docId}:`, err);
+    throw err;
+  }
+}
 async function queryFirestoreWalletTransactions(uid: string, idToken?: string): Promise<any[]> {
   try {
     const url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents:runQuery?key=${FIREBASE_API_KEY}`;
@@ -1136,7 +1183,7 @@ async function processVerifiedWalletFunding(params: ProcessWalletFundingParams):
   for (const k of lockKeys) {
     const cached = processedWalletTransactions.get(k);
     if (cached && (cached.status === "SUCCESS" || cached.status === "ALREADY_PROCESSED")) {
-      const userDoc = await fetchFirestoreDocument("users", studentUid, idToken);
+      const userDoc = await adminGetFirestoreDocument("users", studentUid);
       const currentBal = Number(userDoc?.walletBalance || 0);
       return {
         success: true,
@@ -1154,10 +1201,10 @@ async function processVerifiedWalletFunding(params: ProcessWalletFundingParams):
   // 4. Multi-tier idempotency check: Firestore Database (by primary docId and refKey)
   let existingTx: any = null;
   if (idKey) {
-    existingTx = await fetchFirestoreDocument("walletTransactions", idKey, idToken);
+    existingTx = await adminGetFirestoreDocument("walletTransactions", idKey);
   }
   if (!existingTx && refKey && refKey !== idKey) {
-    existingTx = await fetchFirestoreDocument("walletTransactions", refKey, idToken);
+    existingTx = await adminGetFirestoreDocument("walletTransactions", refKey);
   }
 
   if (existingTx) {
@@ -1166,7 +1213,7 @@ async function processVerifiedWalletFunding(params: ProcessWalletFundingParams):
       for (const k of lockKeys) {
         processedWalletTransactions.set(k, existingTx);
       }
-      const userDoc = await fetchFirestoreDocument("users", studentUid, idToken);
+      const userDoc = await adminGetFirestoreDocument("users", studentUid);
       const currentBal = Number(userDoc?.walletBalance || 0);
       return {
         success: true,
@@ -1189,7 +1236,7 @@ async function processVerifiedWalletFunding(params: ProcessWalletFundingParams):
       const isRecentlyActive = (now - lastActiveMs) < 2 * 60 * 1000; // Active within last 2 minutes
 
       if (isRecentlyActive) {
-        const userDoc = await fetchFirestoreDocument("users", studentUid, idToken);
+        const userDoc = await adminGetFirestoreDocument("users", studentUid);
         const currentBal = Number(userDoc?.walletBalance || 0);
         return {
           success: false,
@@ -1204,16 +1251,22 @@ async function processVerifiedWalletFunding(params: ProcessWalletFundingParams):
 
       // Stale PROCESSING (> 2 minutes old, e.g. after Node.js restart or crash):
       // Check if student's balance was already updated before the crash/interruption
-      const userDoc = await fetchFirestoreDocument("users", studentUid, idToken);
+      const userDoc = await adminGetFirestoreDocument("users", studentUid);
       const currentBal = Number(userDoc?.walletBalance || 0);
 
       if (existingTx.expectedNewBalance !== undefined && currentBal >= Number(existingTx.expectedNewBalance)) {
         console.warn(`[Wallet Funding] Transaction ${primaryDocId} was already credited before server restart. Updating to SUCCESS.`);
-        const recoverySuccessOk = await updateFirestoreFields("walletTransactions", primaryDocId, {
-          status: "SUCCESS",
-          verifiedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        }, idToken);
+        let recoverySuccessOk = false;
+        try {
+          await adminUpdateFirestoreFields("walletTransactions", primaryDocId, {
+            status: "SUCCESS",
+            verifiedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+          recoverySuccessOk = true;
+        } catch (recoveryErr) {
+          console.error(`[Wallet Funding] Failed to recover transaction ${primaryDocId}:`, recoveryErr);
+        }
 
         if (recoverySuccessOk) {
           const finalizedTx = { ...existingTx, status: "SUCCESS" };
@@ -1241,7 +1294,7 @@ async function processVerifiedWalletFunding(params: ProcessWalletFundingParams):
 
   try {
     // 5. Read users/{uid} & verify student existence
-    const studentUser = await fetchFirestoreDocument("users", studentUid, idToken);
+    const studentUser = await adminGetFirestoreDocument("users", studentUid);
     if (!studentUser) {
       return {
         success: false,
@@ -1264,7 +1317,7 @@ async function processVerifiedWalletFunding(params: ProcessWalletFundingParams):
     const newBalance = currentBalance + verifiedAmount;
 
     // Double-check Firestore right before write to prevent race condition
-    const preCreditCheck = await fetchFirestoreDocument("walletTransactions", primaryDocId, idToken);
+    const preCreditCheck = await adminGetFirestoreDocument("walletTransactions", primaryDocId);
     if (preCreditCheck && preCreditCheck.status === "SUCCESS") {
       for (const k of lockKeys) {
         processedWalletTransactions.set(k, preCreditCheck);
@@ -1300,7 +1353,13 @@ async function processVerifiedWalletFunding(params: ProcessWalletFundingParams):
       description: `CampusRead Wallet Funding (₦${verifiedAmount.toLocaleString()})`
     };
 
-    const initialWriteOk = await saveFirestoreDocument("walletTransactions", primaryDocId, processingRecord, idToken);
+    let initialWriteOk = false;
+    try {
+      await adminSetFirestoreDocument("walletTransactions", primaryDocId, processingRecord);
+      initialWriteOk = true;
+    } catch (initialWriteErr) {
+      console.error(`[Wallet Funding] Failed to write initial processing record for ${primaryDocId}:`, initialWriteErr);
+    }
     if (!initialWriteOk) {
       console.error(`[Wallet Funding] Failed to write initial processing record for ${primaryDocId}`);
       return {
@@ -1312,19 +1371,29 @@ async function processVerifiedWalletFunding(params: ProcessWalletFundingParams):
     }
 
     // 7. Update users/{uid}.walletBalance authoritatively
-    const balanceUpdateOk = await updateFirestoreFields("users", studentUid, {
-      walletBalance: newBalance,
-      updatedAt: new Date().toISOString()
-    }, idToken);
+    let balanceUpdateOk = false;
+    try {
+      await adminUpdateFirestoreFields("users", studentUid, {
+        walletBalance: newBalance,
+        updatedAt: new Date().toISOString()
+      });
+      balanceUpdateOk = true;
+    } catch (balanceErr) {
+      console.error(`[Wallet Funding] Failed to update wallet balance for ${studentUid}:`, balanceErr);
+    }
 
     if (!balanceUpdateOk) {
       console.error(`[Wallet Funding] CRITICAL: Failed to update wallet balance in users/${studentUid} for transaction ${primaryDocId}`);
       // Mark transaction record as FAILED in Firestore so it is not mistaken for success
-      await updateFirestoreFields("walletTransactions", primaryDocId, {
-        status: "FAILED",
-        failureReason: "User walletBalance update failed",
-        updatedAt: new Date().toISOString()
-      }, idToken);
+      try {
+        await adminUpdateFirestoreFields("walletTransactions", primaryDocId, {
+          status: "FAILED",
+          failureReason: "User walletBalance update failed",
+          updatedAt: new Date().toISOString()
+        });
+      } catch (failedMarkErr) {
+        console.error(`[Wallet Funding] Failed to mark transaction ${primaryDocId} as FAILED:`, failedMarkErr);
+      }
 
       return {
         success: false,
@@ -1342,11 +1411,17 @@ async function processVerifiedWalletFunding(params: ProcessWalletFundingParams):
       updatedAt: new Date().toISOString()
     };
 
-    const successUpdateOk = await updateFirestoreFields("walletTransactions", primaryDocId, {
-      status: "SUCCESS",
-      verifiedAt: finalTxRecord.verifiedAt,
-      updatedAt: finalTxRecord.updatedAt
-    }, idToken);
+    let successUpdateOk = false;
+    try {
+      await adminUpdateFirestoreFields("walletTransactions", primaryDocId, {
+        status: "SUCCESS",
+        verifiedAt: finalTxRecord.verifiedAt,
+        updatedAt: finalTxRecord.updatedAt
+      });
+      successUpdateOk = true;
+    } catch (successUpdateErr) {
+      console.error(`[Wallet Funding] Failed to mark transaction ${primaryDocId} as SUCCESS:`, successUpdateErr);
+    }
 
     if (!successUpdateOk) {
       console.error(`[Wallet Funding] CRITICAL DATABASE ERROR: Failed to mark transaction ${primaryDocId} as SUCCESS in Firestore.`);
@@ -1366,10 +1441,12 @@ async function processVerifiedWalletFunding(params: ProcessWalletFundingParams):
 
     // Also write alias docId if refKey exists and differs from idKey to guarantee lookup by either key
     if (refKey && refKey !== primaryDocId) {
-      await saveFirestoreDocument("walletTransactions", refKey, {
+      await adminSetFirestoreDocument("walletTransactions", refKey, {
         ...finalTxRecord,
         id: refKey
-      }, idToken).catch(() => {});
+      }).catch((aliasErr) => {
+        console.error(`[Wallet Funding] Failed to write transaction alias ${refKey}:`, aliasErr);
+      });
     }
 
     // 9. Cache in memory map only after BOTH Firestore operations succeed
@@ -1574,6 +1651,28 @@ app.post("/api/wallet/purchase-book", async (req, res) => {
   try {
     const { studentUid, bookId, bookTitle, authorUid, price, affiliateCode } = req.body;
 
+    // Require a valid Firebase ID token for every wallet purchase.
+    const authResult = await extractAuthTokenAndUid(req);
+    if (!authResult) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized: A valid Firebase ID token is required to purchase a book."
+      });
+    }
+
+    const { uid: authenticatedUid, idToken } = authResult;
+
+    // Never trust a client-supplied student UID unless it matches
+    // the authenticated Firebase account.
+    if (authenticatedUid !== String(studentUid).trim()) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized: Authenticated user does not match the requested student account."
+      });
+    }
+
+
+
     if (!studentUid || !bookId) {
       return res.status(400).json({
         success: false,
@@ -1584,8 +1683,8 @@ app.post("/api/wallet/purchase-book", async (req, res) => {
     const purchaseDocId = `${studentUid}_${bookId}`;
 
     // 1. Prevent duplicate purchases: Check if already purchased
-    const existingPurchase = await fetchFirestoreDocument("purchases", purchaseDocId);
-    const studentUser = await fetchFirestoreDocument("users", studentUid);
+    const existingPurchase = await adminGetFirestoreDocument("purchases", purchaseDocId);
+    const studentUser = await adminGetFirestoreDocument("users", studentUid);
     const currentBal = Number(studentUser?.walletBalance || 0);
 
     if (existingPurchase) {
@@ -1607,7 +1706,7 @@ app.post("/api/wallet/purchase-book", async (req, res) => {
 
     // 2. Authoritative Price Verification: Fetch from server-side database
     let bookPrice = Number(price);
-    const bookDoc = await fetchFirestoreDocument("books", bookId);
+    const bookDoc = await adminGetFirestoreDocument("books", bookId);
 
     // Verify book approval status if document exists in Firestore
     if (bookDoc) {
@@ -1638,7 +1737,7 @@ app.post("/api/wallet/purchase-book", async (req, res) => {
     const newBal = currentBal - bookPrice;
 
     // Deduct student wallet authoritatively
-    await updateFirestoreFields("users", studentUid, {
+    await adminUpdateFirestoreFields("users", studentUid, {
       walletBalance: newBal,
       updatedAt: new Date().toISOString()
     });
@@ -1653,10 +1752,10 @@ app.post("/api/wallet/purchase-book", async (req, res) => {
       lecturerAmt = Math.round(bookPrice * 0.80);
 
       // If affiliate user found, credit commissionBalance
-      const affUser = await fetchFirestoreDocument("users", affiliateCode);
+      const affUser = await adminGetFirestoreDocument("users", affiliateCode);
       if (affUser) {
         const curComm = Number(affUser.commissionBalance || 0);
-        await updateFirestoreFields("users", affiliateCode, {
+        await adminUpdateFirestoreFields("users", affiliateCode, {
           commissionBalance: curComm + affiliateAmt,
           updatedAt: new Date().toISOString()
         });
@@ -1666,10 +1765,10 @@ app.post("/api/wallet/purchase-book", async (req, res) => {
     // Credit lecturer earningsBalance
     const verifiedAuthorUid = authorUid || (bookDoc && bookDoc.authorUid) || "verified-author";
     if (verifiedAuthorUid && verifiedAuthorUid !== "verified-author") {
-      const authorUser = await fetchFirestoreDocument("users", verifiedAuthorUid);
+      const authorUser = await adminGetFirestoreDocument("users", verifiedAuthorUid);
       if (authorUser) {
         const curEarn = Number(authorUser.earningsBalance || 0);
-        await updateFirestoreFields("users", verifiedAuthorUid, {
+        await adminUpdateFirestoreFields("users", verifiedAuthorUid, {
           earningsBalance: curEarn + lecturerAmt,
           updatedAt: new Date().toISOString()
         });
@@ -1695,7 +1794,7 @@ app.post("/api/wallet/purchase-book", async (req, res) => {
       purchaseDate: purchaseDate
     };
 
-    await saveFirestoreDocument("purchases", purchaseDocId, purchaseRecord);
+    await adminSetFirestoreDocument("purchases", purchaseDocId, purchaseRecord);
 
     // Create Debit Wallet Transaction Record
     const debitTxId = `wal_${Date.now()}`;
@@ -1714,7 +1813,7 @@ app.post("/api/wallet/purchase-book", async (req, res) => {
       description: `Purchased: ${verifiedTitle}`
     };
 
-    await saveFirestoreDocument("walletTransactions", debitTxId, debitTx);
+    await adminSetFirestoreDocument("walletTransactions", debitTxId, debitTx);
 
     return res.json({
       success: true,
