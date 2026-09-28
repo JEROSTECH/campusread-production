@@ -4,7 +4,7 @@ import fs from "fs";
 import dotenv from "dotenv";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
-import { getApps, initializeApp, applicationDefault } from "firebase-admin/app";
+import { getApps, initializeApp, applicationDefault, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 
 dotenv.config();
@@ -14,9 +14,13 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || "campusread-f8102";
 const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || "AIzaSyBoRpDErIy7y1R0aXlPWNREg4mcO5DMd4k";
 
-// Trusted server-side Firebase Admin SDK. Credentials are supplied through GOOGLE_APPLICATION_CREDENTIALS.
+// Trusted server-side Firebase Admin SDK. Production credentials may be supplied through FIREBASE_ADMIN_CREDENTIALS; local development falls back to GOOGLE_APPLICATION_CREDENTIALS.
+const firebaseAdminCredential = process.env.FIREBASE_ADMIN_CREDENTIALS
+  ? cert(JSON.parse(process.env.FIREBASE_ADMIN_CREDENTIALS))
+  : applicationDefault();
+
 const firebaseAdminApp = getApps().length === 0
-  ? initializeApp({ credential: applicationDefault(), projectId: FIREBASE_PROJECT_ID })
+  ? initializeApp({ credential: firebaseAdminCredential, projectId: FIREBASE_PROJECT_ID })
   : getApps()[0];
 const adminDb = getFirestore(firebaseAdminApp);
 
