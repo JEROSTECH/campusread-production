@@ -6,7 +6,6 @@ import {
   ShieldCheck,
   BookOpen,
   Download,
-  ShoppingBag,
   CheckCircle2,
   Award,
   FileText,
@@ -21,7 +20,6 @@ interface BookDetailModalProps {
   book: Book;
   isSaved: boolean;
   onClose: () => void;
-  onAddToCart: (book: Book) => void;
   onToggleSave: (book: Book) => void;
   onOpenReader: (book: Book) => void;
   onRequestWalletFunding?: (book: Book, amount: number) => void;
@@ -33,14 +31,13 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   book,
   isSaved,
   onClose,
-  onAddToCart,
   onToggleSave,
   onOpenReader,
   onRequestWalletFunding,
   autoPurchase,
   onAutoPurchaseComplete
 }) => {
-  const { userProfile, refreshUserProfile } = useAuth();
+  const { currentUser, userProfile, refreshUserProfile } = useAuth();
   const [selectedLicense, setSelectedLicense] = useState<'digital' | 'bundle'>('digital');
   const [activeTab, setActiveTab] = useState<'overview' | 'toc' | 'excerpt'>('overview');
   const [copied, setCopied] = useState(false);
@@ -59,18 +56,29 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
       return;
     }
 
+    if (!currentUser) {
+      setWalletError("Your login session has expired. Please log in again.");
+      return;
+    }
+
     if (studentWalletBal < price) {
-      setWalletError(`Insufficient wallet balance (₦${studentWalletBal.toLocaleString()}). Please fund your wallet to continue.`);
+      setWalletError(`Insufficient wallet balance (?${studentWalletBal.toLocaleString()}). Please fund your wallet to continue.`);
       onRequestWalletFunding?.(book, price);
       return;
     }
+
     setPurchasingWallet(true);
     setWalletError(null);
 
     try {
+      const idToken = await currentUser.getIdToken(true);
+
       const res = await fetch('/api/wallet/purchase-book', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
         body: JSON.stringify({
           studentUid: userProfile.uid,
           bookId: book.id,
@@ -329,15 +337,6 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                       <span>{walletError}</span>
                     </div>
                   )}
-
-                  <button
-                    id="modal-add-to-cart-btn"
-                    onClick={() => onAddToCart(book)}
-                    className="w-full py-3 bg-blue-700 text-white font-bold rounded-lg shadow-md hover:bg-blue-800 transition-all flex items-center justify-center gap-2 text-xs"
-                  >
-                    <ShoppingBag className="w-4 h-4" />
-                    Add to Cart {"\u20A6"}{price.toLocaleString()}
-                  </button>
 
                   <button
                     id="modal-preview-reader-btn"

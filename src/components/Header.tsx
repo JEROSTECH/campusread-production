@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, ShoppingBag, BookOpen, User, Building2, Sparkles, Menu, X, LogOut, Smartphone } from 'lucide-react';
+import { Search, BookOpen, User, Building2, Sparkles, Menu, X, LogOut, Smartphone } from 'lucide-react';
 import { INSTITUTIONS } from '../data/mockBooks';
 import { useAuth } from '../context/AuthContext';
 
@@ -10,9 +10,7 @@ interface HeaderProps {
   setSearchQuery: (query: string) => void;
   selectedInstitution: string;
   setSelectedInstitution: (institutionId: string) => void;
-  cartCount: number;
   savedCount: number;
-  onOpenCart: () => void;
   onOpenAuth: (mode: 'login' | 'register', registerRole?: 'STUDENT' | 'LECTURER' | 'AFFILIATE') => void;
   onOpenDownloadModal: () => void;
 }
@@ -24,8 +22,6 @@ export const Header: React.FC<HeaderProps> = ({
   setSearchQuery,
   selectedInstitution,
   setSelectedInstitution,
-  cartCount,
-  onOpenCart,
   onOpenAuth,
   onOpenDownloadModal,
 }) => {
@@ -144,21 +140,6 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Smartphone className="w-3.5 h-3.5 text-emerald-600" />
           <span>Get App</span>
-        </button>
-
-        {/* Cart Drawer Toggle Button */}
-        <button
-          id="cart-drawer-button"
-          onClick={onOpenCart}
-          className="relative flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-md font-semibold text-xs transition-colors cursor-pointer"
-        >
-          <ShoppingBag className="w-4 h-4 text-blue-900" />
-          <span className="hidden sm:inline">Cart</span>
-          {cartCount > 0 && (
-            <span id="cart-badge" className="bg-blue-800 text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full">
-              {cartCount}
-            </span>
-          )}
         </button>
 
         {/* Auth State Controls or User Dashboard Link */}

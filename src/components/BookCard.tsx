@@ -1,12 +1,11 @@
 import React from 'react';
 import { Book } from '../types';
-import { Bookmark, Star, Eye, ShoppingCart } from 'lucide-react';
+import { Bookmark, Star, Eye } from 'lucide-react';
 
 interface BookCardProps {
   book: Book;
   isSaved: boolean;
   onSelectBook: (book: Book) => void;
-  onAddToCart: (book: Book) => void;
   onToggleSave: (book: Book) => void;
   onPreviewExcerpt: (book: Book) => void;
 }
@@ -15,7 +14,6 @@ export const BookCard: React.FC<BookCardProps> = ({
   book,
   isSaved,
   onSelectBook,
-  onAddToCart,
   onToggleSave,
   onPreviewExcerpt,
 }) => {
@@ -119,24 +117,13 @@ export const BookCard: React.FC<BookCardProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5">
-            <button
-              id={`cart-add-${book.id}`}
-              onClick={() => onAddToCart(book)}
-              className="p-1.5 text-slate-600 hover:text-blue-700 hover:bg-blue-50 rounded border border-slate-200 transition-colors"
-              title="Add to Cart"
-            >
-              <ShoppingCart className="w-4 h-4" />
-            </button>
 
             <button
               id={`buy-now-${book.id}`}
-              onClick={() => {
-                onAddToCart(book);
-                onSelectBook(book);
-              }}
+              onClick={() => onSelectBook(book)}
               className="px-3 py-1.5 bg-blue-700 text-white text-xs font-bold rounded hover:bg-blue-800 transition-colors shadow-sm"
             >
-              Buy Now
+              Buy with Wallet
             </button>
           </div>
         </div>

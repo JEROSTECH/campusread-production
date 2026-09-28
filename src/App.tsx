@@ -1,11 +1,10 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { MOCK_BOOKS } from './data/mockBooks';
-import { Book, CartItem, ActiveTab, WebsiteSettings } from './types';
+import { Book, ActiveTab, WebsiteSettings } from './types';
 import { Header } from './components/Header';
 import { HeroSection } from './components/HeroSection';
 import { BookCard } from './components/BookCard';
 import { BookDetailModal } from './components/BookDetailModal';
-import { CartDrawer } from './components/CartDrawer';
 import { ReaderModal } from './components/ReaderModal';
 import { LecturerPortalModal } from './components/LecturerPortalModal';
 import { HowItWorksModal } from './components/HowItWorksModal';
@@ -40,7 +39,6 @@ export default function App() {
   const [websiteSettings, setWebsiteSettings] = useState<WebsiteSettings | undefined>(undefined);
 
   // Modals & Drawers state
-  const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [savedBookIds, setSavedBookIds] = useState<string[]>(['book-1', 'book-3']);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [pendingWalletPurchase, setPendingWalletPurchase] = useState<{
@@ -50,7 +48,6 @@ export default function App() {
   const [autoPurchaseBookId, setAutoPurchaseBookId] = useState<string | null>(null);
   const [readerBook, setReaderBook] = useState<Book | null>(null);
 
-  const [isCartOpen, setIsCartOpen] = useState(false);
   const [isSavedOnly, setIsSavedOnly] = useState(false);
   const [isLecturerPortalOpen, setIsLecturerPortalOpen] = useState(false);
   const [isHowItWorksOpen, setIsHowItWorksOpen] = useState(false);
@@ -261,42 +258,6 @@ export default function App() {
     setCurrentView('STUDENT_DASHBOARD');
   };
 
-  // Cart operations
-  const handleAddToCart = (book: Book) => {
-    setCartItems((prev) => {
-      const existing = prev.find((item) => item.book.id === book.id);
-
-      if (existing) {
-        return prev.map((item) =>
-          item.book.id === book.id
-            ? { ...item, quantity: item.quantity + 1 }
-            : item
-        );
-      }
-
-      return [...prev, { book, quantity: 1 }];
-    });
-
-    setIsCartOpen(true);
-  };
-
-  const handleUpdateQuantity = (bookId: string, quantity: number) => {
-    if (quantity <= 0) {
-      handleRemoveFromCart(bookId);
-      return;
-    }
-
-    setCartItems((prev) =>
-      prev.map((item) =>
-        item.book.id === bookId ? { ...item, quantity } : item
-      )
-    );
-  };
-
-  const handleRemoveFromCart = (bookId: string) => {
-    setCartItems((prev) => prev.filter((item) => item.book.id !== bookId));
-  };
-
   const handleToggleSave = (book: Book) => {
     setSavedBookIds((prev) =>
       prev.includes(book.id)
@@ -439,9 +400,7 @@ export default function App() {
         setSearchQuery={setSearchQuery}
         selectedInstitution={selectedInstitution}
         setSelectedInstitution={setSelectedInstitution}
-        cartCount={cartItems.reduce((acc, item) => acc + item.quantity, 0)}
         savedCount={savedBookIds.length}
-        onOpenCart={() => setIsCartOpen(true)}
         onOpenAuth={(mode, regRole) => openAuthModal(mode, regRole)}
         onOpenDownloadModal={() => setIsDownloadModalOpen(true)}
       />
@@ -558,7 +517,6 @@ onWalletFundingSuccess={
                       book={book}
                       isSaved={savedBookIds.includes(book.id)}
                       onSelectBook={(selected) => openBook(selected)}
-                      onAddToCart={(cartBook) => handleAddToCart(cartBook)}
                       onToggleSave={(savedBook) => handleToggleSave(savedBook)}
                       onPreviewExcerpt={(readerTarget) =>
                         setReaderBook(readerTarget)
@@ -602,10 +560,6 @@ onWalletFundingSuccess={
           book={selectedBook}
           isSaved={savedBookIds.includes(selectedBook.id)}
           onClose={closeBook}
-          onAddToCart={(b) => {
-            handleAddToCart(b);
-            closeBook();
-          }}
           onToggleSave={handleToggleSave}
           onOpenReader={(b) => {
             closeBook();
@@ -616,15 +570,6 @@ onWalletFundingSuccess={
           onAutoPurchaseComplete={() => setAutoPurchaseBookId(null)}
         />
       )}
-
-      <CartDrawer
-        isOpen={isCartOpen}
-        cartItems={cartItems}
-        onClose={() => setIsCartOpen(false)}
-        onUpdateQuantity={handleUpdateQuantity}
-        onRemoveItem={handleRemoveFromCart}
-        onClearCart={() => setCartItems([])}
-      />
 
       {readerBook && (
         <ReaderModal
