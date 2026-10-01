@@ -1664,7 +1664,7 @@ app.post("/api/wallet/purchase-book", async (req, res) => {
       });
     }
 
-    const { uid: authenticatedUid, idToken } = authResult;
+    const { uid: authenticatedUid } = authResult;
 
     // Never trust a client-supplied student UID unless it matches
     // the authenticated Firebase account.
@@ -1675,8 +1675,6 @@ app.post("/api/wallet/purchase-book", async (req, res) => {
       });
     }
 
-
-
     if (!studentUid || !bookId) {
       return res.status(400).json({
         success: false,
@@ -1686,149 +1684,254 @@ app.post("/api/wallet/purchase-book", async (req, res) => {
 
     const purchaseDocId = `${studentUid}_${bookId}`;
 
-    // 1. Prevent duplicate purchases: Check if already purchased
-    const existingPurchase = await adminGetFirestoreDocument("purchases", purchaseDocId);
-    const studentUser = await adminGetFirestoreDocument("users", studentUid);
-    const currentBal = Number(studentUser?.walletBalance || 0);
+    /*
+     * ATOMIC WALLET PURCHASE
+     *
+     * All reads happen before any writes.
+     * Wallet deduction, purchase/access record, wallet transaction,
+     * lecturer earnings and affiliate commission are committed together.
+     *
+     * If any validation or write fails, Firestore aborts the entire
+     * transaction and the student's wallet remains unchanged.
+     */
+    const purchaseDate = new Date().toISOString();
+    const operationId = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    const txRef = `WAL-PUR-${operationId}`;
+    const debitTxId = `wal_${operationId}`;
 
-    if (existingPurchase) {
+    const result = await adminDb.runTransaction(async (transaction) => {
+      const studentRef = adminDb.collection("users").doc(String(studentUid));
+      const purchaseRef = adminDb.collection("purchases").doc(purchaseDocId);
+      const bookRef = adminDb.collection("books").doc(String(bookId));
+
+      // ---------------------------------------------------------
+      // READ PHASE — ALL DOCUMENT READS MUST HAPPEN BEFORE WRITES
+      // ---------------------------------------------------------
+      const [studentSnap, purchaseSnap, bookSnap] = await Promise.all([
+        transaction.get(studentRef),
+        transaction.get(purchaseRef),
+        transaction.get(bookRef)
+      ]);
+
+      if (!studentSnap.exists) {
+        throw new Error("STUDENT_NOT_FOUND");
+      }
+
+      // Duplicate purchase protection is inside the transaction,
+      // preventing two simultaneous requests from charging twice.
+      if (purchaseSnap.exists) {
+        return {
+          alreadyPurchased: true,
+          walletBalance: Number(studentSnap.data()?.walletBalance || 0),
+          purchase: purchaseSnap.data() || null,
+          transaction: null
+        };
+      }
+
+      const studentData = studentSnap.data() || {};
+      const currentBal = Number(studentData.walletBalance || 0);
+
+      const bookDoc = bookSnap.exists ? (bookSnap.data() || {}) : null;
+
+      // ---------------------------------------------------------
+      // BOOK VALIDATION
+      // ---------------------------------------------------------
+      if (bookDoc) {
+        const bookStatus = bookDoc.approvalStatus || bookDoc.status;
+
+        if (bookStatus && bookStatus !== "APPROVED") {
+          throw new Error("BOOK_NOT_APPROVED");
+        }
+      }
+
+      // Preserve the existing server-side price behaviour.
+      let bookPrice = Number(price);
+
+      if (bookDoc && bookDoc.price) {
+        bookPrice = Number(bookDoc.price);
+      }
+
+      if (isNaN(bookPrice) || bookPrice <= 0) {
+        bookPrice = 3500;
+      }
+
+      if (currentBal < bookPrice) {
+        throw new Error(`INSUFFICIENT_BALANCE:${currentBal}:${bookPrice}`);
+      }
+
+      // ---------------------------------------------------------
+      // REVENUE SPLIT
+      // ---------------------------------------------------------
+      const platformAmt = Math.round(bookPrice * 0.15);
+      let affiliateAmt = 0;
+      let lecturerAmt = Math.round(bookPrice * 0.85);
+
+      if (affiliateCode) {
+        affiliateAmt = Math.round(bookPrice * 0.05);
+        lecturerAmt = Math.round(bookPrice * 0.80);
+      }
+
+      const verifiedAuthorUid =
+        authorUid ||
+        (bookDoc && bookDoc.authorUid) ||
+        "verified-author";
+
+      const verifiedTitle =
+        bookTitle ||
+        (bookDoc && bookDoc.title) ||
+        "Academic Textbook";
+
+      // ---------------------------------------------------------
+      // READ AFFILIATE / LECTURER BEFORE ANY WRITE
+      // ---------------------------------------------------------
+      let affiliateRef: FirebaseFirestore.DocumentReference | null = null;
+      let affiliateSnap: FirebaseFirestore.DocumentSnapshot | null = null;
+
+      if (affiliateCode) {
+        affiliateRef = adminDb.collection("users").doc(String(affiliateCode));
+        affiliateSnap = await transaction.get(affiliateRef);
+      }
+
+      let authorRef: FirebaseFirestore.DocumentReference | null = null;
+      let authorSnap: FirebaseFirestore.DocumentSnapshot | null = null;
+
+      if (verifiedAuthorUid && verifiedAuthorUid !== "verified-author") {
+        authorRef = adminDb.collection("users").doc(String(verifiedAuthorUid));
+        authorSnap = await transaction.get(authorRef);
+      }
+
+      // ---------------------------------------------------------
+      // WRITE PHASE — EVERYTHING BELOW COMMITS TOGETHER
+      // ---------------------------------------------------------
+      const newBal = currentBal - bookPrice;
+
+      // 1. Deduct student wallet.
+      transaction.update(studentRef, {
+        walletBalance: newBal,
+        updatedAt: purchaseDate
+      });
+
+      // 2. Create purchase/access record.
+      const purchaseRecord = {
+        id: purchaseDocId,
+        studentUid,
+        bookId,
+        bookTitle: verifiedTitle,
+        authorUid: verifiedAuthorUid,
+        price: bookPrice,
+        platformAmount: platformAmt,
+        affiliateAmount: affiliateAmt,
+        lecturerAmount: lecturerAmt,
+        transactionRef: txRef,
+        purchaseDate: purchaseDate
+      };
+
+      transaction.set(purchaseRef, purchaseRecord);
+
+      // 3. Create wallet debit transaction.
+      const debitTx = {
+        id: debitTxId,
+        uid: studentUid,
+        reference: txRef,
+        flutterwaveTransactionId: "CAMPUSREAD_WALLET",
+        amount: -bookPrice,
+        currency: "NGN",
+        type: "BOOK_PURCHASE",
+        status: "SUCCESS",
+        paymentProvider: "WALLET",
+        createdAt: purchaseDate,
+        verifiedAt: purchaseDate,
+        description: `Purchased: ${verifiedTitle}`
+      };
+
+      const debitTxRef = adminDb
+        .collection("walletTransactions")
+        .doc(debitTxId);
+
+      transaction.set(debitTxRef, debitTx);
+
+      // 4. Credit affiliate commission if the affiliate exists.
+      // Preserve the existing behaviour: an invalid/missing affiliate
+      // document does not block the student's purchase.
+      if (affiliateRef && affiliateSnap?.exists) {
+        const affUser = affiliateSnap.data() || {};
+        const curComm = Number(affUser.commissionBalance || 0);
+
+        transaction.update(affiliateRef, {
+          commissionBalance: curComm + affiliateAmt,
+          updatedAt: purchaseDate
+        });
+      }
+
+      // 5. Credit lecturer earnings if the lecturer exists.
+      // Preserve the existing behaviour for missing author documents.
+      if (authorRef && authorSnap?.exists) {
+        const authorUser = authorSnap.data() || {};
+        const curEarn = Number(authorUser.earningsBalance || 0);
+
+        transaction.update(authorRef, {
+          earningsBalance: curEarn + lecturerAmt,
+          updatedAt: purchaseDate
+        });
+      }
+
+      return {
+        alreadyPurchased: false,
+        walletBalance: newBal,
+        purchase: purchaseRecord,
+        transaction: debitTx
+      };
+    });
+
+    // Existing purchase: return the same successful response behaviour.
+    if (result.alreadyPurchased) {
       return res.json({
         success: true,
         message: "This textbook is already in your digital library.",
         alreadyPurchased: true,
-        walletBalance: currentBal,
-        purchase: existingPurchase
+        walletBalance: result.walletBalance,
+        purchase: result.purchase
       });
     }
 
-    if (!studentUser) {
+    return res.json({
+      success: true,
+      message: "Textbook successfully purchased using student wallet balance!",
+      walletBalance: result.walletBalance,
+      purchase: result.purchase,
+      transaction: result.transaction
+    });
+
+  } catch (err: any) {
+    const errorMessage = String(err?.message || "");
+
+    if (errorMessage === "STUDENT_NOT_FOUND") {
       return res.status(404).json({
         success: false,
         message: "Student user account not found in CampusRead database."
       });
     }
 
-    // 2. Authoritative Price Verification: Fetch from server-side database
-    let bookPrice = Number(price);
-    const bookDoc = await adminGetFirestoreDocument("books", bookId);
-
-    // Verify book approval status if document exists in Firestore
-    if (bookDoc) {
-      const bookStatus = bookDoc.approvalStatus || bookDoc.status;
-      if (bookStatus && bookStatus !== "APPROVED") {
-        return res.status(400).json({
-          success: false,
-          message: "Access Denied: This academic material is currently pending moderation or rejected and cannot be purchased."
-        });
-      }
-    }
-
-    if (bookDoc && bookDoc.price) {
-      bookPrice = Number(bookDoc.price);
-    }
-
-    if (isNaN(bookPrice) || bookPrice <= 0) {
-      bookPrice = 3500; // Safe default for verified course material
-    }
-
-    if (currentBal < bookPrice) {
+    if (errorMessage === "BOOK_NOT_APPROVED") {
       return res.status(400).json({
         success: false,
-        message: `Insufficient wallet balance. You have ₦${currentBal.toLocaleString()} but this book costs ₦${bookPrice.toLocaleString()}. Please fund your wallet first.`
+        message: "Access Denied: This academic material is currently pending moderation or rejected and cannot be purchased."
       });
     }
 
-    const newBal = currentBal - bookPrice;
+    if (errorMessage.startsWith("INSUFFICIENT_BALANCE:")) {
+      const [, balanceRaw, priceRaw] = errorMessage.split(":");
+      const balance = Number(balanceRaw || 0);
+      const required = Number(priceRaw || 0);
 
-    // Deduct student wallet authoritatively
-    await adminUpdateFirestoreFields("users", studentUid, {
-      walletBalance: newBal,
-      updatedAt: new Date().toISOString()
-    });
-
-    // Calculate revenue splits (15% Platform, 5% Affiliate if referred, 80% Lecturer)
-    const platformAmt = Math.round(bookPrice * 0.15);
-    let affiliateAmt = 0;
-    let lecturerAmt = Math.round(bookPrice * 0.85);
-
-    if (affiliateCode) {
-      affiliateAmt = Math.round(bookPrice * 0.05);
-      lecturerAmt = Math.round(bookPrice * 0.80);
-
-      // If affiliate user found, credit commissionBalance
-      const affUser = await adminGetFirestoreDocument("users", affiliateCode);
-      if (affUser) {
-        const curComm = Number(affUser.commissionBalance || 0);
-        await adminUpdateFirestoreFields("users", affiliateCode, {
-          commissionBalance: curComm + affiliateAmt,
-          updatedAt: new Date().toISOString()
-        });
-      }
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient wallet balance. You have ₦${balance.toLocaleString()} but this book costs ₦${required.toLocaleString()}. Please fund your wallet first.`
+      });
     }
 
-    // Credit lecturer earningsBalance
-    const verifiedAuthorUid = authorUid || (bookDoc && bookDoc.authorUid) || "verified-author";
-    if (verifiedAuthorUid && verifiedAuthorUid !== "verified-author") {
-      const authorUser = await adminGetFirestoreDocument("users", verifiedAuthorUid);
-      if (authorUser) {
-        const curEarn = Number(authorUser.earningsBalance || 0);
-        await adminUpdateFirestoreFields("users", verifiedAuthorUid, {
-          earningsBalance: curEarn + lecturerAmt,
-          updatedAt: new Date().toISOString()
-        });
-      }
-    }
-
-    const purchaseDate = new Date().toISOString();
-    const txRef = `WAL-PUR-${Date.now()}`;
-    const verifiedTitle = bookTitle || (bookDoc && bookDoc.title) || "Academic Textbook";
-
-    // Create Purchase Record
-    const purchaseRecord = {
-      id: purchaseDocId,
-      studentUid,
-      bookId,
-      bookTitle: verifiedTitle,
-      authorUid: verifiedAuthorUid,
-      price: bookPrice,
-      platformAmount: platformAmt,
-      affiliateAmount: affiliateAmt,
-      lecturerAmount: lecturerAmt,
-      transactionRef: txRef,
-      purchaseDate: purchaseDate
-    };
-
-    await adminSetFirestoreDocument("purchases", purchaseDocId, purchaseRecord);
-
-    // Create Debit Wallet Transaction Record
-    const debitTxId = `wal_${Date.now()}`;
-    const debitTx = {
-      id: debitTxId,
-      uid: studentUid,
-      reference: txRef,
-      flutterwaveTransactionId: "CAMPUSREAD_WALLET",
-      amount: -bookPrice,
-      currency: "NGN",
-      type: "BOOK_PURCHASE",
-      status: "SUCCESS",
-      paymentProvider: "WALLET",
-      createdAt: purchaseDate,
-      verifiedAt: purchaseDate,
-      description: `Purchased: ${verifiedTitle}`
-    };
-
-    await adminSetFirestoreDocument("walletTransactions", debitTxId, debitTx);
-
-    return res.json({
-      success: true,
-      message: "Textbook successfully purchased using student wallet balance!",
-      walletBalance: newBal,
-      purchase: purchaseRecord,
-      transaction: debitTx
-    });
-
-  } catch (err: any) {
     console.error("Wallet book purchase error:", err);
+
     return res.status(500).json({
       success: false,
       message: "Failed to process wallet purchase."
