@@ -25,7 +25,7 @@ const firebaseAdminApp = getApps().length === 0
 const adminDb = getFirestore(firebaseAdminApp);
 
 // Private storage directory strictly OUTSIDE public web root
-const PRIVATE_STORAGE_DIR = path.join(process.cwd(), "storage_private", "materials");
+const PRIVATE_STORAGE_DIR = process.env.CAMPUSREAD_STORAGE_DIR || path.join(process.cwd(), "storage_private", "materials");
 if (!fs.existsSync(PRIVATE_STORAGE_DIR)) {
   fs.mkdirSync(PRIVATE_STORAGE_DIR, { recursive: true });
 }
