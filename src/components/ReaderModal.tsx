@@ -71,9 +71,10 @@ export const ReaderModal: React.FC<ReaderModalProps> = ({ book, purchaseRef = 'C
           purchaseRef
         });
 
-        // If no binary was stored on server, generate verified course pack PDF on the fly
+        // A purchased/approved material must use the real authenticated PDF.
+        // Do not silently substitute a generated sample when the real PDF is unavailable.
         if (!pdfBuffer) {
-          pdfBuffer = generateSampleCoursePackPdf(book);
+          throw new Error('Authenticated PDF binary could not be retrieved from the CampusRead server or local cache.');
         }
 
         if (isCancelled) return;

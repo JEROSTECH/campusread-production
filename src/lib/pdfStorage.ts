@@ -248,19 +248,12 @@ export async function getPdfDataForReader(
   book: Book,
   authContext?: { uid?: string; role?: string; matric?: string; purchaseRef?: string }
 ): Promise<ArrayBuffer | null> {
-  // 1. Try local IndexedDB / session cache first
-  if (book.fileStoragePath) {
-    const cached = await getPdfFromLocalCache(book.fileStoragePath);
-    if (cached) return cached;
-  }
-
-  const cachedById = await getPdfFromLocalCache(book.id);
-  if (cachedById) return cachedById;
-
-  // 2. Fetch authenticated binary from Express backend endpoint
+  // 1. Always try the authenticated server copy first.
+  // This prevents stale IndexedDB data from overriding the real purchased PDF.
   try {
     const currentUser = auth.currentUser;
     let idToken = '';
+
     if (currentUser) {
       try {
         idToken = await currentUser.getIdToken();
@@ -269,43 +262,84 @@ export async function getPdfDataForReader(
       }
     }
 
-    const uid = authContext?.uid || currentUser?.uid || 'student-viewer';
+    const uid = authContext?.uid || currentUser?.uid || '';
     const role = authContext?.role || 'STUDENT';
     const matric = authContext?.matric || '';
     const purchaseRef = authContext?.purchaseRef || '';
 
     const headers: Record<string, string> = {
       ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
-      'x-user-uid': uid,
-      'x-user-role': role,
+      ...(uid ? { 'x-user-uid': uid } : {}),
+      ...(role ? { 'x-user-role': role } : {}),
       ...(matric ? { 'x-student-matric': matric } : {}),
       ...(purchaseRef ? { 'x-purchase-ref': purchaseRef } : {})
     };
 
     const res = await fetch(`/api/materials/${encodeURIComponent(book.id)}/pdf`, {
       method: 'GET',
-      headers
+      headers,
+      cache: 'no-store'
     });
 
     if (res.ok) {
       const buffer = await res.arrayBuffer();
+
       if (buffer && buffer.byteLength > 0) {
+        // Refresh the offline cache with the authenticated server copy.
         await savePdfToLocalCache(book.id, buffer);
+
         if (book.fileStoragePath) {
           await savePdfToLocalCache(book.fileStoragePath, buffer);
         }
+
+        console.log(
+          `[CampusRead PDF] Authenticated server PDF loaded successfully: ${buffer.byteLength} bytes`
+        );
+
         return buffer;
       }
+
+      console.warn('[CampusRead PDF] Server returned an empty PDF response.');
     } else {
-      console.warn(`PDF retrieval from server endpoint returned HTTP ${res.status}`);
+      console.warn(
+        `[CampusRead PDF] Server PDF request returned HTTP ${res.status}.`
+      );
     }
   } catch (serverErr) {
-    console.warn('Could not fetch PDF from server API:', serverErr);
+    console.warn('[CampusRead PDF] Server PDF request failed:', serverErr);
   }
 
+  // 2. Only use the local cache if the authenticated server copy
+  // could not be retrieved. This preserves offline reading capability.
+  try {
+    if (book.fileStoragePath) {
+      const cached = await getPdfFromLocalCache(book.fileStoragePath);
+
+      if (cached) {
+        console.warn(
+          '[CampusRead PDF] Using cached PDF because the authenticated server PDF was unavailable.'
+        );
+        return cached;
+      }
+    }
+
+    const cachedById = await getPdfFromLocalCache(book.id);
+
+    if (cachedById) {
+      console.warn(
+        '[CampusRead PDF] Using cached PDF by book ID because the authenticated server PDF was unavailable.'
+      );
+      return cachedById;
+    }
+  } catch (cacheErr) {
+    console.warn('[CampusRead PDF] Local PDF cache lookup failed:', cacheErr);
+  }
+
+  // 3. No real PDF is available.
+  // Return null so the caller shows an error instead of silently
+  // substituting a generated sample for a purchased book.
   return null;
 }
-
 /**
  * Generates an authentic educational PDF ArrayBuffer on the fly for demonstration or structured course packs
  */
