@@ -765,13 +765,13 @@ const handlePdfStream = async (req: express.Request, res: express.Response) => {
 
     // 2. Fetch Authoritative User Role from Firestore
     let userRole = "STUDENT";
-    const userDoc = await fetchFirestoreDocument("users", authenticatedUid);
+    const userDoc = await adminGetFirestoreDocument("users", authenticatedUid);
     if (userDoc && userDoc.role) {
       userRole = String(userDoc.role).toUpperCase();
     }
 
     // 3. Fetch Authoritative Book Document from Firestore & Registry
-    let bookDoc = await fetchFirestoreDocument("books", safeMaterialId);
+    let bookDoc = await adminGetFirestoreDocument("books", safeMaterialId);
     let meta = materialRegistry.get(safeMaterialId);
 
     const authorUid = (bookDoc && bookDoc.authorUid) || (meta && meta.lecturerUid) || "";
@@ -800,9 +800,9 @@ const handlePdfStream = async (req: express.Request, res: express.Response) => {
       // Student Purchase Verification
       if (userRole === "STUDENT" || !isAuthor) {
         // Query Firestore for legitimate purchase record
-        let purchaseDoc = await fetchFirestoreDocument("purchases", `${authenticatedUid}_${safeMaterialId}`);
+        let purchaseDoc = await adminGetFirestoreDocument("purchases", `${authenticatedUid}_${safeMaterialId}`);
         if (!purchaseDoc) {
-          purchaseDoc = await fetchFirestoreDocument("purchases", `${authenticatedUid}-${safeMaterialId}`);
+          purchaseDoc = await adminGetFirestoreDocument("purchases", `${authenticatedUid}-${safeMaterialId}`);
         }
 
         // Validate purchase fields
