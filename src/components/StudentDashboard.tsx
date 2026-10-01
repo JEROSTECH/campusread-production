@@ -123,33 +123,70 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
   useEffect(() => {
     async function fetchPurchases() {
-      if (!userProfile?.uid) return;
+      if (!userProfile?.uid) {
+        setPurchasedBooks([]);
+        return;
+      }
 
       setLoadingPurchases(true);
 
       try {
-        const q = query(
+        // First get the student's actual purchase records.
+        const purchasesQuery = query(
           collection(db, 'purchases'),
           where('studentUid', '==', userProfile.uid)
         );
 
-        const snap = await getDocs(q);
+        const purchasesSnap = await getDocs(purchasesQuery);
 
-        if (!snap.empty) {
-          const purchasedIds = snap.docs.map(
-            (doc) => doc.data().bookId
-          );
-
-          const userBooks = MOCK_BOOKS.filter((book) =>
-            purchasedIds.includes(book.id)
-          );
-
-          if (userBooks.length > 0) {
-            setPurchasedBooks(userBooks);
-          }
+        if (purchasesSnap.empty) {
+          setPurchasedBooks([]);
+          return;
         }
+
+        const purchasedIds = purchasesSnap.docs
+          .map((purchaseDoc) => String(purchaseDoc.data().bookId || '').trim())
+          .filter(Boolean);
+
+        if (purchasedIds.length === 0) {
+          setPurchasedBooks([]);
+          return;
+        }
+
+        // Load the same approved Firestore catalogue used by the main bookstore.
+        const approvedBooksQuery = query(
+          collection(db, 'books'),
+          where('approvalStatus', '==', 'APPROVED')
+        );
+
+        const approvedBooksSnap = await getDocs(approvedBooksQuery);
+
+        const firestoreBooks: Book[] = approvedBooksSnap.docs.map(
+          (bookDoc) => ({
+            ...bookDoc.data(),
+            id: bookDoc.id,
+          } as Book)
+        );
+
+        // Keep support for existing demo/mock books that may have been purchased.
+        const allAvailableBooks = [...firestoreBooks, ...MOCK_BOOKS];
+
+        const purchasedIdSet = new Set(purchasedIds);
+
+        // Show only materials that the current student actually purchased.
+        const userBooks = allAvailableBooks.filter((book) =>
+          purchasedIdSet.has(String(book.id))
+        );
+
+        // Remove duplicate IDs if a Firestore book and mock book share an ID.
+        const uniqueBooks = Array.from(
+          new Map(userBooks.map((book) => [book.id, book])).values()
+        );
+
+        setPurchasedBooks(uniqueBooks);
       } catch (err) {
         console.warn('Purchases fetch notice:', err);
+        setPurchasedBooks([]);
       } finally {
         setLoadingPurchases(false);
       }
