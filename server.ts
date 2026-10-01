@@ -600,7 +600,7 @@ app.post("/api/materials/upload", upload.single("file"), async (req, res) => {
 
     // 2. Fetch authoritative user role from Firestore
     let userRole = "STUDENT";
-    const userDoc = await fetchFirestoreDocument("users", authenticatedUid);
+    const userDoc = await adminGetFirestoreDocument("users", authenticatedUid);
     if (userDoc && userDoc.role) {
       userRole = String(userDoc.role).toUpperCase();
     }
